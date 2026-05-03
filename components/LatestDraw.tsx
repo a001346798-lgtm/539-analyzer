@@ -5,7 +5,7 @@ import { useLotteryStore } from '@/store/useLotteryStore'
 interface Draw {
   period: string
   date: string
-  session?: string   // 舊版 mock data 的欄位，相容保留
+  session?: string
   numbers: number[]
 }
 
@@ -15,7 +15,6 @@ function ballColor(n: number): string {
   return 'bg-emerald-500'
 }
 
-// 色球統計：n%3=1→紅, n%3=2→藍, n%3=0→綠，0個不顯示
 function colorSummary(numbers: number[]): { red: number; blue: number; green: number } {
   let red = 0, blue = 0, green = 0
   numbers.forEach(n => {
@@ -26,20 +25,30 @@ function colorSummary(numbers: number[]): { red: number; blue: number; green: nu
   return { red, blue, green }
 }
 
-export default function LatestDraw() {
-  const [draws, setDraws]       = useState<Draw[]>([])
-  const [updatedAt, setUpdatedAt] = useState('')
-  const [loading, setLoading]   = useState(false)
-  const [statusMsg, setStatusMsg] = useState('')
-  const [isError, setIsError]   = useState(false)
+const GAME_LABEL: Record<string, string> = {
+  tw539:       '今彩 539',
+  mi_fantasy5: '密西根天天樂',
+}
 
+const GAME_DATE_NOTE: Record<string, string> = {
+  tw539:       '',
+  mi_fantasy5: '（密西根時間）',
+}
+
+export default function LatestDraw() {
+  const [draws, setDraws]         = useState<Draw[]>([])
+  const [updatedAt, setUpdatedAt] = useState('')
+  const [loading, setLoading]     = useState(false)
+  const [statusMsg, setStatusMsg] = useState('')
+  const [isError, setIsError]     = useState(false)
+
+  const gameMode            = useLotteryStore(s => s.gameMode)
   const loadOfficialMissing = useLotteryStore(s => s.loadOfficialMissing)
   const bumpBacktest        = useLotteryStore(s => s.bumpBacktest)
 
-  // 載入開獎資料：優先讀官方 official-draws.json，若無則顯示 mock
-  const loadDraws = useCallback(async () => {
+  const loadDraws = useCallback(async (game: string) => {
     try {
-      const res  = await fetch('/api/fetch-draws')
+      const res  = await fetch(`/api/fetch-draws?game=${game}`)
       const data = await res.json() as { draws?: Draw[]; updatedAt?: string }
 
       if (data.draws && data.draws.length > 0) {
@@ -47,35 +56,41 @@ export default function LatestDraw() {
         setUpdatedAt(data.updatedAt ?? '')
         return
       }
-      // fallback: 顯示 mock 資料（尚未爬取時）
-      const mock = await fetch('/api/draws')
-      const mockData = await mock.json() as { draws?: Draw[] }
-      setDraws(mockData.draws?.slice(0, 8) ?? [])
+      // fallback: mock 資料（tw539 only）
+      if (game === 'tw539') {
+        const mock = await fetch('/api/draws')
+        const mockData = await mock.json() as { draws?: Draw[] }
+        setDraws(mockData.draws?.slice(0, 8) ?? [])
+      } else {
+        setDraws([])
+      }
       setUpdatedAt('')
     } catch {}
   }, [])
 
-  // 頁面掛載：載入資料 + 同步遺漏值至主號碼池
+  // 切換遊戲或首次掛載時重新載入
   useEffect(() => {
-    loadDraws()
+    setDraws([])
+    setStatusMsg('')
+    setIsError(false)
+    loadDraws(gameMode)
     loadOfficialMissing()
-  }, [loadDraws, loadOfficialMissing])
+  }, [gameMode, loadDraws, loadOfficialMissing])
 
-  // 點擊「更新開獎資料」：觸發爬蟲 POST → 重讀資料 + 同步遺漏值
   const handleUpdate = async () => {
     setLoading(true)
     setStatusMsg('')
     setIsError(false)
     try {
-      const res  = await fetch('/api/fetch-draws', { method: 'POST' })
+      const res  = await fetch(`/api/fetch-draws?game=${gameMode}`, { method: 'POST' })
       const data = await res.json() as { ok?: boolean; count?: number; error?: string }
 
       if (!res.ok || data.error) throw new Error(data.error ?? '伺服器錯誤')
 
       setStatusMsg(`已取得 ${data.count} 期資料`)
-      await loadDraws()
-      await loadOfficialMissing()   // 同步最新遺漏值到主號碼池
-      bumpBacktest()                // 通知勝率面板重算
+      await loadDraws(gameMode)
+      await loadOfficialMissing()
+      bumpBacktest()
     } catch (e) {
       setIsError(true)
       setStatusMsg(e instanceof Error ? e.message : '更新失敗')
@@ -84,18 +99,25 @@ export default function LatestDraw() {
     }
   }
 
+  const gameLabel    = GAME_LABEL[gameMode]    ?? ''
+  const gameDateNote = GAME_DATE_NOTE[gameMode] ?? ''
+
   return (
     <div className="bg-gray-800 rounded-xl p-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <div className="flex flex-col gap-0.5">
-          <h2 className="text-white font-bold text-base">歷史開獎紀錄</h2>
+          <h2 className="text-white font-bold text-base">
+            歷史開獎紀錄
+            <span className="ml-2 text-xs font-normal text-gray-400">{gameLabel}</span>
+          </h2>
           {updatedAt && (
             <span className="text-[10px] text-gray-500">
               資料更新：{new Date(updatedAt).toLocaleString('zh-TW', {
                 month: '2-digit', day: '2-digit',
                 hour: '2-digit', minute: '2-digit',
               })}
+              {gameDateNote && <span className="ml-1 text-gray-600">{gameDateNote}</span>}
             </span>
           )}
         </div>
@@ -143,7 +165,7 @@ export default function LatestDraw() {
                   </span>
                 </div>
 
-                {/* Balls + single/double labels */}
+                {/* Balls */}
                 <div className="flex gap-2 flex-1 justify-center">
                   {draw.numbers.map(n => (
                     <div key={n} className="flex flex-col items-center gap-0.5">
@@ -163,7 +185,7 @@ export default function LatestDraw() {
                   ))}
                 </div>
 
-                {/* Right column: odd/even + color summary */}
+                {/* Right: odd/even + color summary */}
                 <div className="flex flex-col items-end gap-1 flex-shrink-0 w-14">
                   <span className="text-[10px] text-gray-500">
                     {oddCount}單{evenCount}雙

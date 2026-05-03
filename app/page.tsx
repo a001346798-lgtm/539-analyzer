@@ -1,3 +1,4 @@
+import GameSwitcher  from '@/components/GameSwitcher'
 import LatestDraw    from '@/components/LatestDraw'
 import NumberPool    from '@/components/NumberPool'
 import CandidateZone from '@/components/CandidateZone'
@@ -15,6 +16,7 @@ export default function Home() {
           <h1 className="text-2xl font-bold text-white tracking-wide">539 分析工具</h1>
           <p className="text-xs text-gray-500 mt-1">亂數預覽 · 分組淘汰 · 軌跡追蹤</p>
         </header>
+        <GameSwitcher />
         <LatestDraw />
         <NumberPool />
         <CandidateZone />

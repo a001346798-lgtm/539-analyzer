@@ -10,7 +10,7 @@ function initMissing(): Record<number, number> {
 
 export interface TraceRecord {
   id: string
-  group: number[]    // full candidates snapshot at confirm time
+  group: number[]
   selected: number
   time: number
 }
@@ -21,23 +21,25 @@ export interface HistoryRecord {
   date: string
 }
 
-// 'select' = click → candidates  |  'exclude' = click → excluded
 export type PoolMode = 'select' | 'exclude'
+export type GameMode = 'tw539' | 'mi_fantasy5'
 
 interface State {
+  gameMode: GameMode
   poolMode: PoolMode
   excluded: number[]
-  candidates: number[]   // staging: pool → here → preview → locked
+  candidates: number[]
   preview: number[]
-  locked: number[]       // only numbers confirmed via preview
+  locked: number[]
   traces: TraceRecord[]
   missing: Record<number, number>
   period: string
   history: HistoryRecord[]
-  backtestVersion: number   // incremented after save() or loadOfficialMissing() to trigger panel refresh
+  backtestVersion: number
 }
 
 interface Actions {
+  setGameMode(m: GameMode): void
   setPoolMode(m: PoolMode): void
   toggleExclude(n: number): void
   toggleCandidate(n: number): void
@@ -56,6 +58,7 @@ interface Actions {
 }
 
 export const useLotteryStore = create<State & Actions>((set, get) => ({
+  gameMode: 'tw539',
   poolMode: 'select',
   excluded: [],
   candidates: [],
@@ -67,6 +70,19 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
   history: [],
   backtestVersion: 0,
 
+  // 切換遊戲：重置所有選號狀態，但保留 history 由 loadHistory 重載
+  setGameMode: (gameMode) => set({
+    gameMode,
+    poolMode: 'select',
+    excluded: [],
+    candidates: [],
+    preview: [],
+    locked: [],
+    traces: [],
+    missing: initMissing(),
+    period: '',
+  }),
+
   setPoolMode: (poolMode) => set({ poolMode }),
 
   toggleExclude: (n) =>
@@ -76,7 +92,6 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
         : [...s.excluded, n],
     })),
 
-  // Excluded and already-locked numbers cannot become candidates
   toggleCandidate: (n) =>
     set((s) => {
       if (s.excluded.includes(n) || s.locked.includes(n)) return s
@@ -89,7 +104,6 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
 
   clearCandidates: () => set({ candidates: [], preview: [] }),
 
-  // Draw N numbers randomly from candidates (skip any that are already excluded/locked)
   genPreview: (count) =>
     set((s) => {
       const pool = s.candidates.filter(
@@ -101,11 +115,6 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
       }
     }),
 
-  // Confirm one number from preview:
-  //   - add to locked
-  //   - exclude the ENTIRE candidates group (auto-gray)
-  //   - clear preview + candidates
-  //   - record full trace
   confirmLock: (n) =>
     set((s) => {
       if (!s.preview.includes(n)) return s
@@ -113,7 +122,7 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
       const newLocked   = [...s.locked, n].sort((a, b) => a - b)
       const trace: TraceRecord = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        group: [...s.candidates],   // full candidate group, not just the drawn subset
+        group: [...s.candidates],
         selected: n,
         time: Date.now(),
       }
@@ -149,12 +158,12 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
   setPeriod: (period) => set({ period }),
 
   save: async () => {
-    const { period, locked } = get()
+    const { period, locked, gameMode } = get()
     if (!period.trim() || locked.length === 0) return
     await fetch('/api/history', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ period, numbers: locked }),
+      body: JSON.stringify({ period, numbers: locked, game: gameMode }),
     })
     await get().loadHistory()
     set(s => ({ backtestVersion: s.backtestVersion + 1 }))
@@ -162,16 +171,17 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
 
   loadHistory: async () => {
     try {
-      const res  = await fetch('/api/history')
+      const { gameMode } = get()
+      const res  = await fetch(`/api/history?game=${gameMode}`)
       const data = await res.json()
       set({ history: data.records ?? [] })
     } catch {}
   },
 
-  // 從 official-draws.json 讀取真實遺漏值，取代初始化的 0
   loadOfficialMissing: async () => {
     try {
-      const res = await fetch('/api/fetch-draws')
+      const { gameMode } = get()
+      const res = await fetch(`/api/fetch-draws?game=${gameMode}`)
       if (!res.ok) return
       const data = await res.json() as { missing?: Record<string, number> }
       if (!data.missing || Object.keys(data.missing).length === 0) return

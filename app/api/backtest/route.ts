@@ -1,10 +1,19 @@
 import { NextResponse } from 'next/server'
 import { getServerClient } from '@/lib/supabase'
 
-// Normalise any date string → "YYYY-MM-DD"
-// handles: "2026/04/30", "2026-04-30T08:00:00Z", "2026-04-30"
 function toYMD(d: string): string {
   return d.replace(/\//g, '-').slice(0, 10)
+}
+
+// 將 UTC 時間戳轉換為密西根本地日期（America/Detroit，自動處理 DST）
+// 密西根 7:29pm ET 開獎 = 隔天 7:29am（EDT）/ 8:29am（EST）台灣時間
+// 所以台灣用戶存檔時，UTC saved_at 對應的密西根日期即為該期開獎日期
+function toMichiganDate(utcStr: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Detroit' }).format(new Date(utcStr))
+  } catch {
+    return toYMD(utcStr)
+  }
 }
 
 export interface BacktestDetail {
@@ -14,7 +23,7 @@ export interface BacktestDetail {
   officialPeriod:  string   | null
   officialDate:    string   | null
   hits:            number[]
-  isWin:           boolean  | null   // null = unmatched
+  isWin:           boolean  | null
 }
 
 export interface BacktestResponse {
@@ -22,32 +31,36 @@ export interface BacktestResponse {
   wins:      number
   losses:    number
   unmatched: number
-  winRate:   number          // percentage, 1 decimal
+  winRate:   number
   details:   BacktestDetail[]
 }
 
-export async function GET(): Promise<Response> {
+export async function GET(req: Request): Promise<Response> {
+  const { searchParams } = new URL(req.url)
+  const game         = searchParams.get('game') ?? 'tw539'
+  const officialTable = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+
   try {
     const db = getServerClient()
 
-    // ── Fetch both tables in parallel ───────────────────────
     const [histResult, offResult] = await Promise.all([
       db.from('user_history')
         .select('period, numbers, saved_at')
+        .eq('game', game)
         .order('saved_at', { ascending: true }),
 
-      db.from('official_draws')
+      db.from(officialTable)
         .select('period, date, numbers')
         .order('date', { ascending: false }),
     ])
 
     if (histResult.error) console.error('[backtest] user_history error:', histResult.error.message)
-    if (offResult.error)  console.error('[backtest] official_draws error:', offResult.error.message)
+    if (offResult.error)  console.error('[backtest] official error:', offResult.error.message)
 
     const histRows = histResult.data ?? []
     const offRows  = offResult.data  ?? []
 
-    // ── Build date → official draw lookup ───────────────────
+    // 建立 date → official draw 的查找表
     const byDate = new Map<string, { numbers: number[]; period: string; date: string }>()
     for (const r of offRows) {
       byDate.set(toYMD(r.date as string), {
@@ -57,13 +70,17 @@ export async function GET(): Promise<Response> {
       })
     }
 
-    // ── Cross-reference ──────────────────────────────────────
     const details: BacktestDetail[] = []
     let wins = 0, losses = 0, unmatched = 0
 
     for (const rec of histRows) {
-      const saveDate = toYMD(rec.saved_at as string)
-      const official = byDate.get(saveDate)
+      // 密西根遊戲：將 UTC saved_at 轉換為密西根本地日期後比對
+      // 今彩539：直接取 UTC 日期（台灣存檔時間與開獎日期同步）
+      const lookupDate = game === 'mi_fantasy5'
+        ? toMichiganDate(rec.saved_at as string)
+        : toYMD(rec.saved_at as string)
+
+      const official = byDate.get(lookupDate)
       const myNums   = rec.numbers as number[]
 
       if (!official) {
@@ -96,7 +113,7 @@ export async function GET(): Promise<Response> {
 
     return NextResponse.json({
       total, wins, losses, unmatched, winRate,
-      details: [...details].reverse(),   // most-recent save first
+      details: [...details].reverse(),
     } satisfies BacktestResponse)
 
   } catch (err) {

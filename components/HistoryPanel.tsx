@@ -2,10 +2,16 @@
 import { useEffect } from 'react'
 import { useLotteryStore } from '@/store/useLotteryStore'
 
+const PERIOD_PLACEHOLDER: Record<string, string> = {
+  tw539:       '期數（例：11403001）',
+  mi_fantasy5: '期數（例：20260502）',
+}
+
 export default function HistoryPanel() {
   const period      = useLotteryStore(s => s.period)
   const locked      = useLotteryStore(s => s.locked)
   const history     = useLotteryStore(s => s.history)
+  const gameMode    = useLotteryStore(s => s.gameMode)
   const setPeriod   = useLotteryStore(s => s.setPeriod)
   const save        = useLotteryStore(s => s.save)
   const loadHistory = useLotteryStore(s => s.loadHistory)
@@ -21,7 +27,7 @@ export default function HistoryPanel() {
       <div className="flex gap-2 mb-4">
         <input
           type="text"
-          placeholder="期數（例：11403001）"
+          placeholder={PERIOD_PLACEHOLDER[gameMode] ?? '期數'}
           value={period}
           onChange={e => setPeriod(e.target.value)}
           className="flex-1 min-w-0 bg-gray-700 text-white text-sm rounded px-3 py-2 border border-gray-600 placeholder-gray-500 focus:outline-none focus:border-blue-500"

@@ -5,15 +5,20 @@ import { getServerClient } from '@/lib/supabase'
 //   id       BIGSERIAL PK
 //   period   TEXT
 //   numbers  INTEGER[]
+//   game     TEXT NOT NULL DEFAULT 'tw539'
 //   saved_at TIMESTAMPTZ DEFAULT now()
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const game = searchParams.get('game') ?? 'tw539'
+
   try {
     const db = getServerClient()
 
     const { data, error } = await db
       .from('user_history')
       .select('period, numbers, saved_at')
+      .eq('game', game)
       .order('saved_at', { ascending: true })
 
     if (error) {
@@ -24,7 +29,7 @@ export async function GET() {
     const records = (data ?? []).map(row => ({
       period:  row.period  as string,
       numbers: row.numbers as number[],
-      date:    row.saved_at as string,   // 保持與原介面相容
+      date:    row.saved_at as string,
     }))
 
     return NextResponse.json({ records })
@@ -36,8 +41,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const body = await req.json() as { period?: string; numbers?: number[] }
-  const { period, numbers } = body
+  const body = await req.json() as { period?: string; numbers?: number[]; game?: string }
+  const { period, numbers, game = 'tw539' } = body
 
   if (!period || !Array.isArray(numbers) || numbers.length === 0) {
     return NextResponse.json({ error: 'invalid' }, { status: 400 })
@@ -48,7 +53,7 @@ export async function POST(req: Request) {
 
     const { error } = await db
       .from('user_history')
-      .insert({ period, numbers })
+      .insert({ period, numbers, game })
 
     if (error) {
       console.error('[history] POST error:', error.message)

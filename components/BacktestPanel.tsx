@@ -9,7 +9,6 @@ function ballColor(n: number): string {
   return 'bg-emerald-500'
 }
 
-// ── Mini ball chip ──────────────────────────────────────────
 function Ball({ n, highlight }: { n: number; highlight?: boolean }) {
   return (
     <span
@@ -24,7 +23,6 @@ function Ball({ n, highlight }: { n: number; highlight?: boolean }) {
   )
 }
 
-// ── Summary stat card ───────────────────────────────────────
 function StatCard({ label, value, color }: { label: string; value: string | number; color: string }) {
   return (
     <div className="bg-gray-700/60 rounded-xl px-4 py-3 flex flex-col items-center gap-1 flex-1 min-w-[5rem]">
@@ -34,10 +32,8 @@ function StatCard({ label, value, color }: { label: string; value: string | numb
   )
 }
 
-// ── Detail row ──────────────────────────────────────────────
 function DetailRow({ rec }: { rec: BacktestDetail }) {
   if (!rec.officialNumbers) {
-    // Unmatched
     return (
       <div className="bg-gray-700/40 rounded-lg px-3 py-2.5 flex flex-wrap items-center gap-2">
         <span className="text-gray-500 text-xs font-mono w-20 flex-shrink-0">{rec.period}</span>
@@ -55,21 +51,15 @@ function DetailRow({ rec }: { rec: BacktestDetail }) {
     <div className={`rounded-lg px-3 py-2.5 flex flex-wrap items-start gap-x-3 gap-y-2 border-l-2 ${
       isWin ? 'bg-emerald-900/20 border-emerald-500' : 'bg-red-900/20 border-red-500'
     }`}>
-      {/* Period */}
       <span className="text-gray-400 text-xs font-mono w-20 flex-shrink-0 pt-0.5">{rec.period}</span>
 
-      {/* My numbers → official numbers */}
       <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-        {/* My picks */}
         <div className="flex flex-wrap gap-1">
           {rec.myNumbers.map(n => (
             <Ball key={n} n={n} highlight={rec.hits.includes(n)} />
           ))}
         </div>
-
         <span className="text-gray-500 text-xs">→</span>
-
-        {/* Official draw */}
         <div className="flex flex-wrap gap-1">
           {rec.officialNumbers.map(n => (
             <Ball key={n} n={n} highlight={rec.hits.includes(n)} />
@@ -77,14 +67,13 @@ function DetailRow({ rec }: { rec: BacktestDetail }) {
         </div>
       </div>
 
-      {/* Result badge */}
       <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
         <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
           isWin
             ? 'bg-emerald-800/60 text-emerald-300'
             : 'bg-red-800/60 text-red-300'
         }`}>
-          {isWin ? '✓ 過關' : `✕ 失敗`}
+          {isWin ? '✓ 過關' : '✕ 失敗'}
         </span>
         {rec.hits.length > 0 && (
           <span className="text-[10px] text-red-400">{rec.hits.length}中：{rec.hits.join(',')}</span>
@@ -94,18 +83,18 @@ function DetailRow({ rec }: { rec: BacktestDetail }) {
   )
 }
 
-// ── Main component ──────────────────────────────────────────
 export default function BacktestPanel() {
-  const [isOpen,   setIsOpen]   = useState(false)
-  const [loading,  setLoading]  = useState(false)
-  const [data,     setData]     = useState<BacktestResponse | null>(null)
+  const [isOpen,  setIsOpen]  = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [data,    setData]    = useState<BacktestResponse | null>(null)
 
   const backtestVersion = useLotteryStore(s => s.backtestVersion)
+  const gameMode        = useLotteryStore(s => s.gameMode)
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (game: string) => {
     setLoading(true)
     try {
-      const res  = await fetch('/api/backtest')
+      const res  = await fetch(`/api/backtest?game=${game}`)
       const json = await res.json() as BacktestResponse
       setData(json)
     } catch {
@@ -115,16 +104,19 @@ export default function BacktestPanel() {
     }
   }, [])
 
-  // Refetch whenever the modal is open AND backtestVersion changes
   useEffect(() => {
-    if (isOpen) fetchData()
-  }, [isOpen, backtestVersion, fetchData])
+    if (isOpen) fetchData(gameMode)
+  }, [isOpen, backtestVersion, gameMode, fetchData])
+
+  // 遊戲切換時清除舊資料
+  useEffect(() => {
+    setData(null)
+  }, [gameMode])
 
   const close = () => setIsOpen(false)
 
   return (
     <>
-      {/* Trigger button */}
       <button
         onClick={() => setIsOpen(true)}
         className="w-full py-2.5 bg-amber-700/80 hover:bg-amber-700 text-white text-sm font-semibold rounded-xl transition-colors tracking-wide"
@@ -132,29 +124,24 @@ export default function BacktestPanel() {
         查看五不中勝率分析
       </button>
 
-      {/* Modal overlay */}
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/75 backdrop-blur-sm"
-            onClick={close}
-          />
+          <div className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={close} />
 
-          {/* Panel */}
           <div className="relative z-10 bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl max-h-[88vh] flex flex-col shadow-2xl">
 
-            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700 flex-shrink-0">
               <div>
                 <h2 className="text-white font-bold text-base">五不中 勝率回測</h2>
                 <p className="text-[10px] text-gray-500 mt-0.5">
-                  以存檔日期對應官方開獎日，0 中為過關
+                  {gameMode === 'tw539'
+                    ? '以存檔日期對應官方開獎日，0 中為過關'
+                    : '以存檔日期（密西根時區）對應開獎日，0 中為過關'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={fetchData}
+                  onClick={() => fetchData(gameMode)}
                   disabled={loading}
                   className="text-xs text-gray-400 hover:text-white px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
                 >
@@ -169,7 +156,6 @@ export default function BacktestPanel() {
               </div>
             </div>
 
-            {/* Content */}
             {loading && !data ? (
               <div className="flex-1 flex items-center justify-center py-16">
                 <span className="text-gray-500 text-sm">計算中…</span>
@@ -180,7 +166,6 @@ export default function BacktestPanel() {
               </div>
             ) : (
               <>
-                {/* Summary stats */}
                 <div className="flex gap-2 px-5 py-4 flex-shrink-0 border-b border-gray-700/50">
                   <StatCard label="總比對期數" value={data.total}    color="text-white" />
                   <StatCard label="過關期數"   value={data.wins}     color="text-emerald-400" />
@@ -192,14 +177,12 @@ export default function BacktestPanel() {
                   />
                 </div>
 
-                {/* Unmatched notice */}
                 {data.unmatched > 0 && (
                   <p className="text-[10px] text-gray-600 px-5 pt-2 flex-shrink-0">
                     另有 {data.unmatched} 筆存檔未能比對（儲存日期無對應官方開獎）
                   </p>
                 )}
 
-                {/* Detail list */}
                 <div className="flex-1 overflow-y-auto px-5 py-3 space-y-2">
                   {data.details.length === 0 ? (
                     <p className="text-gray-500 text-sm text-center py-8">
@@ -212,7 +195,6 @@ export default function BacktestPanel() {
                   )}
                 </div>
 
-                {/* Footer */}
                 <div className="px-5 py-3 border-t border-gray-700/50 flex-shrink-0">
                   <p className="text-[10px] text-gray-600">
                     紅框 = 命中號碼（需命中 0 支才算過關）·

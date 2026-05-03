@@ -3,13 +3,6 @@ import axios, { AxiosError } from 'axios'
 import * as cheerio from 'cheerio'
 import { getServerClient } from '@/lib/supabase'
 
-// official_draws schema:
-//   id         BIGSERIAL PK
-//   period     TEXT UNIQUE    e.g. "20260430"
-//   date       TEXT           e.g. "2026/04/30"
-//   numbers    INTEGER[]      e.g. [6, 15, 27, 30, 31]
-//   created_at TIMESTAMPTZ DEFAULT now()
-
 export interface OfficialDraw {
   period:  string
   date:    string
@@ -23,7 +16,7 @@ export interface OfficialData {
 }
 
 // ────────────────────────────────────────────────────────────
-// 遺漏值計算：從最新一期往舊追，記錄每個號碼連續未出現的期數
+// 遺漏值計算
 // ────────────────────────────────────────────────────────────
 function calcMissing(draws: OfficialDraw[]): Record<string, number> {
   const missing: Record<string, number> = {}
@@ -45,10 +38,15 @@ const REQUEST_HEADERS = {
   'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
 }
 
-// ────────────────────────────────────────────────────────────
-// 解析器 A：lotto-8.com（已驗證）
-//   6-col 行：col0 = "2026/04/30 ..." col1-5 = 個別號碼
-// ────────────────────────────────────────────────────────────
+function deduplicate(draws: OfficialDraw[]): OfficialDraw[] {
+  const seen = new Set<string>()
+  return draws.filter(d => !seen.has(d.period) && seen.add(d.period))
+}
+
+// ════════════════════════════════════════════════════════════
+// 今彩 539 爬蟲
+// ════════════════════════════════════════════════════════════
+
 function parseLotto8(html: string): OfficialDraw[] {
   const $     = cheerio.load(html)
   const draws: OfficialDraw[] = []
@@ -78,10 +76,6 @@ function parseLotto8(html: string): OfficialDraw[] {
   return draws
 }
 
-// ────────────────────────────────────────────────────────────
-// 解析器 B：pilio.idv.tw（已驗證，Big5 數字為 ASCII）
-//   2-col 行：col0 = "04/3026(日)" col1 = "06, 15, 27, 30, 31"
-// ────────────────────────────────────────────────────────────
 function parsePilio(html: string): OfficialDraw[] {
   const $     = cheerio.load(html)
   const draws: OfficialDraw[] = []
@@ -114,39 +108,31 @@ function parsePilio(html: string): OfficialDraw[] {
   return draws
 }
 
-const SOURCES: Array<{ url: string; label: string; parser: (h: string) => OfficialDraw[] }> = [
-  { url: 'https://www.lotto-8.com/listLto539.asp',                       label: 'lotto-8.com', parser: parseLotto8 },
-  { url: 'https://www.pilio.idv.tw/lto539/list.asp?indexpage=1&orderby=1', label: 'pilio.idv.tw', parser: parsePilio },
+const TW539_SOURCES: Array<{ url: string; label: string; parser: (h: string) => OfficialDraw[] }> = [
+  { url: 'https://www.lotto-8.com/listLto539.asp',                         label: 'lotto-8.com',  parser: parseLotto8 },
+  { url: 'https://www.pilio.idv.tw/lto539/list.asp?indexpage=1&orderby=1', label: 'pilio.idv.tw', parser: parsePilio  },
 ]
 
-function deduplicate(draws: OfficialDraw[]): OfficialDraw[] {
-  const seen = new Set<string>()
-  return draws.filter(d => !seen.has(d.period) && seen.add(d.period))
-}
-
-// ────────────────────────────────────────────────────────────
-// 主爬蟲：依序嘗試備援來源，每個 URL 獨立列印詳細錯誤
-// ────────────────────────────────────────────────────────────
-async function scrapeDraws(): Promise<OfficialDraw[]> {
+async function scrapeTw539(): Promise<OfficialDraw[]> {
   const errors: string[] = []
 
-  for (const { url, label, parser } of SOURCES) {
-    console.log(`[fetch-draws] 嘗試 [${label}]: ${url}`)
+  for (const { url, label, parser } of TW539_SOURCES) {
+    console.log(`[fetch-draws/539] 嘗試 [${label}]: ${url}`)
     try {
       const { data: html, status } = await axios.get<string>(url, {
         headers: REQUEST_HEADERS, timeout: 20_000,
         responseEncoding: 'binary', maxRedirects: 5,
       })
-      console.log(`[fetch-draws] HTTP ${status} ← [${label}]`)
+      console.log(`[fetch-draws/539] HTTP ${status} ← [${label}]`)
 
       const draws = deduplicate(parser(html))
       if (draws.length > 0) {
-        console.log(`[fetch-draws] ✅ [${label}] ${draws.length} 期，最新 ${draws[0].date}`)
+        console.log(`[fetch-draws/539] ✅ [${label}] ${draws.length} 期，最新 ${draws[0].date}`)
         return draws
       }
 
       const msg = `HTTP ${status} 成功但解析 0 筆`
-      console.warn(`[fetch-draws] ⚠️  [${label}]: ${msg}`)
+      console.warn(`[fetch-draws/539] ⚠️  [${label}]: ${msg}`)
       errors.push(`[${label}] ${msg}`)
     } catch (e: unknown) {
       let detail = '未知錯誤'
@@ -156,7 +142,7 @@ async function scrapeDraws(): Promise<OfficialDraw[]> {
       } else if (e instanceof Error) {
         detail = e.message
       }
-      console.error(`[fetch-draws] ❌ [${label}] ${url} → ${detail}`)
+      console.error(`[fetch-draws/539] ❌ [${label}] ${url} → ${detail}`)
       errors.push(`[${label}] ${detail}`)
     }
   }
@@ -164,21 +150,186 @@ async function scrapeDraws(): Promise<OfficialDraw[]> {
   throw new Error(`所有來源均失敗。詳細：${errors.join(' | ')}`)
 }
 
+// ════════════════════════════════════════════════════════════
+// 密西根 Fantasy 5 爬蟲
+//
+// 目標：https://lottonumbers.com/michigan-fantasy-5/numbers/2026
+// 嚴格排除 Double Play：任何含 "double" 字樣的 row 或 table 均跳過
+//
+// 時差說明：
+//   密西根 ET（UTC-4 EDT / UTC-5 EST），開獎約 7:29pm ET
+//   台灣 UTC+8：密西根 7:29pm = 隔天 7:29am（EDT）/ 8:29am（EST）
+//   爬蟲寫入日期使用密西根本地日期（網站已顯示 Michigan 時間），無需轉換。
+// ════════════════════════════════════════════════════════════
+
+const MONTH_MAP: Record<string, string> = {
+  jan: '01', feb: '02', mar: '03', apr: '04',
+  may: '05', jun: '06', jul: '07', aug: '08',
+  sep: '09', oct: '10', nov: '11', dec: '12',
+}
+
 // ────────────────────────────────────────────────────────────
-// GET /api/fetch-draws
-// 從 Supabase official_draws 查詢，動態計算遺漏值後回傳
+// 密西根 Fantasy 5 HTML 解析器（已依實際 DOM 結構校正）
+//
+// 實際結構（lottonumbers.com）：
+//   <table class="mobFormat past-results">
+//     <tbody>
+//       <tr><td class="monthRow">May 2026</td></tr>   ← 月份分隔列
+//       <tr>
+//         <td class="date-row">Sat, May 2 2026</td>   ← 日期文字
+//         <td class="balls-row">
+//           <ul class="balls">
+//             <li class="ball ball">7</li>             ← 號碼（1-39）
+//             ...×5
+//           </ul>
+//         </td>
+//         <td class="jp-row">...</td>
+//         <td class="tw-row">...</td>
+//         <td class="link-row">
+//           <a href="/michigan-fantasy-5/numbers/05-02-2026">Payouts</a>
+//         </td>
+//       </tr>
+//     </tbody>
+//   </table>
+//
+// Double Play 在獨立 URL，此頁不存在，保留關鍵字過濾作安全防護。
 // ────────────────────────────────────────────────────────────
-export async function GET() {
+function parseMiFantasy5(html: string): OfficialDraw[] {
+  const $ = cheerio.load(html)
+  const draws: OfficialDraw[] = []
+  let rowIdx = 0
+
+  // 精準選取 past-results 表格的每一個 tbody tr
+  $('table.past-results tbody tr, table.mobFormat tbody tr').each((_, row) => {
+    rowIdx++
+    const rowSnippet = $(row).text().replace(/\s+/g, ' ').trim().slice(0, 100)
+    console.log(`[mi-parser] row ${rowIdx}: "${rowSnippet}"`)
+
+    // 跳過月份分隔列（含 td.monthRow）
+    if ($(row).find('td.monthRow').length > 0) {
+      console.log(`[mi-parser] row ${rowIdx}: skip (monthRow)`)
+      return
+    }
+
+    // 安全防護：跳過任何含 "double" 字樣的列
+    if ($(row).text().toLowerCase().includes('double')) {
+      console.log(`[mi-parser] row ${rowIdx}: skip (double play)`)
+      return
+    }
+
+    // ── 日期：優先從 Payouts 連結 href 提取 MM-DD-YYYY（最可靠）
+    let date   = ''
+    let period = ''
+
+    const payoutsHref = $(row).find('td.link-row a').attr('href') ?? ''
+    const hrefM = payoutsHref.match(/(\d{2})-(\d{2})-(\d{4})$/)
+    if (hrefM) {
+      const [, mm, dd, yyyy] = hrefM
+      date   = `${yyyy}/${mm}/${dd}`
+      period = `${yyyy}${mm}${dd}`
+    } else {
+      // Fallback：解析 td.date-row 文字 "Sat, May 2 2026"
+      const dateText = $(row).find('td.date-row').text().trim()
+      const dateM = dateText.match(/\w+,?\s+(\w+)\s+(\d{1,2})\s+(\d{4})/)
+      if (dateM) {
+        const month = MONTH_MAP[dateM[1].toLowerCase().slice(0, 3)]
+        if (month) {
+          date   = `${dateM[3]}/${month}/${dateM[2].padStart(2, '0')}`
+          period = `${dateM[3]}${month}${dateM[2].padStart(2, '0')}`
+        }
+      }
+    }
+
+    if (!date) {
+      console.log(`[mi-parser] row ${rowIdx}: no date found, skip`)
+      return
+    }
+
+    // ── 號碼：td.balls-row ul.balls li.ball
+    const nums: number[] = []
+    $(row).find('td.balls-row li.ball').each((_, li) => {
+      const n = parseInt($(li).text().trim(), 10)
+      if (Number.isInteger(n) && n >= 1 && n <= 39) nums.push(n)
+    })
+
+    console.log(`[mi-parser] row ${rowIdx}: date=${date} nums=[${nums.join(',')}]`)
+
+    if (nums.length === 5) {
+      draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
+    } else {
+      console.log(`[mi-parser] row ${rowIdx}: expected 5 nums, got ${nums.length}, skip`)
+    }
+  })
+
+  console.log(`[mi-parser] 完成：共解析 ${draws.length} 筆有效開獎`)
+  return deduplicate(draws)
+}
+
+// 爬取當年與上一年，合併後去重
+async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
+  const currentYear = new Date().getFullYear()
+  const years = [currentYear, currentYear - 1]
+  const allDraws: OfficialDraw[] = []
+  const errors: string[] = []
+
+  for (const year of years) {
+    const url   = `https://lottonumbers.com/michigan-fantasy-5/numbers/${year}`
+    const label = `lottonumbers.com/${year}`
+    console.log(`[fetch-draws/mi] 嘗試 [${label}]: ${url}`)
+    try {
+      const { data: html, status } = await axios.get<string>(url, {
+        headers: {
+          ...REQUEST_HEADERS,
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        timeout: 25_000,
+        maxRedirects: 5,
+      })
+      console.log(`[fetch-draws/mi] HTTP ${status} ← [${label}]`)
+
+      const draws = parseMiFantasy5(html)
+      console.log(`[fetch-draws/mi] ✅ [${label}] 解析 ${draws.length} 筆`)
+      allDraws.push(...draws)
+    } catch (e: unknown) {
+      let detail = '未知錯誤'
+      if (e instanceof AxiosError) {
+        const code = e.response?.status
+        detail = code ? `HTTP ${code}` : `網路錯誤：${e.code ?? e.message}`
+      } else if (e instanceof Error) {
+        detail = e.message
+      }
+      console.error(`[fetch-draws/mi] ❌ [${label}] → ${detail}`)
+      errors.push(`[${label}] ${detail}`)
+    }
+  }
+
+  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
+
+  if (result.length === 0) {
+    throw new Error(`密西根資料爬取失敗：${errors.join(' | ')}`)
+  }
+
+  return result
+}
+
+// ════════════════════════════════════════════════════════════
+// GET /api/fetch-draws?game=tw539|mi_fantasy5
+// ════════════════════════════════════════════════════════════
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const game = searchParams.get('game') ?? 'tw539'
+  const table = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+
   try {
     const db = getServerClient()
 
     const { data, error } = await db
-      .from('official_draws')
+      .from(table)
       .select('period, date, numbers, created_at')
-      .order('date', { ascending: false })  // 最新優先
+      .order('date', { ascending: false })
 
     if (error) {
-      console.error('[fetch-draws] GET error:', error.message)
+      console.error(`[fetch-draws] GET error (${table}):`, error.message)
       return NextResponse.json({ draws: [], missing: {}, updatedAt: '' })
     }
 
@@ -198,42 +349,42 @@ export async function GET() {
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[fetch-draws] GET exception:', msg)
+    console.error(`[fetch-draws] GET exception (${table}):`, msg)
     return NextResponse.json({ draws: [], missing: {}, updatedAt: '', error: msg })
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// POST /api/fetch-draws
-// 爬取最新資料 → upsert 到 Supabase official_draws
-// ────────────────────────────────────────────────────────────
-export async function POST() {
+// ════════════════════════════════════════════════════════════
+// POST /api/fetch-draws?game=tw539|mi_fantasy5
+// ════════════════════════════════════════════════════════════
+export async function POST(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const game  = searchParams.get('game') ?? 'tw539'
+  const table = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+
   try {
-    const draws = await scrapeDraws()
-    const db    = getServerClient()
+    const draws = game === 'mi_fantasy5'
+      ? await scrapeMiFantasy5()
+      : await scrapeTw539()
 
-    const rows = draws.map(d => ({
-      period:  d.period,
-      date:    d.date,
-      numbers: d.numbers,
-    }))
+    const db  = getServerClient()
+    const rows = draws.map(d => ({ period: d.period, date: d.date, numbers: d.numbers }))
 
-    // upsert：period 已存在則更新 date/numbers，不存在則插入
     const { error } = await db
-      .from('official_draws')
+      .from(table)
       .upsert(rows, { onConflict: 'period', ignoreDuplicates: false })
 
     if (error) {
-      console.error('[fetch-draws] upsert error:', error.message)
+      console.error(`[fetch-draws] upsert error (${table}):`, error.message)
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    console.log(`[fetch-draws] ✅ upserted ${draws.length} rows into official_draws`)
+    console.log(`[fetch-draws] ✅ upserted ${draws.length} rows into ${table}`)
     return NextResponse.json({ ok: true, count: draws.length })
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[fetch-draws] POST exception:', msg)
+    console.error(`[fetch-draws] POST exception (${table}):`, msg)
     return NextResponse.json({ error: msg }, { status: 502 })
   }
 }
