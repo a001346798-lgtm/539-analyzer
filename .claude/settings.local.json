@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(New-Item -ItemType Directory -Force -Path \"C:\\\\Users\\\\Admin\\\\Downloads\\\\claude\\\\539-analyzer\\\\app\\\\api\\\\draws\")",
+      "Bash(Out-Null)",
+      "Bash(Write-Host \"dir created\")",
+      "Bash(npx tsc *)"
+    ]
+  }
+}
