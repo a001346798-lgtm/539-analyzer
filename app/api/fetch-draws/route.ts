@@ -151,76 +151,192 @@ async function scrapeTw539(): Promise<OfficialDraw[]> {
 }
 
 // ════════════════════════════════════════════════════════════
-// 密西根 Fantasy 5 爬蟲
+// 密西根 Fantasy 5 ── 官方網站 GraphQL API 爬蟲
 //
-// 目標：https://lottonumbers.com/michigan-fantasy-5/numbers/2026
-// 嚴格排除 Double Play：任何含 "double" 字樣的 row 或 table 均跳過
+// 主策略：michiganlottery.com 內部 GraphQL API（Apollo Server）
+//   Endpoint : https://www.michiganlottery.com/api/v1/
+//   Query    : winningNumbers(logicalGameIdentifier:"FANTASY_5", drawDate:"YYYY-MM-DD")
+//   ├─ logicalGameIdentifier = "FANTASY_5"（限定主開獎，Double Play 從根本排除）
+//   └─ drawDate = 密西根本地日期（ET），無開獎日（週日/假日）回傳 null
 //
-// 時差說明：
-//   密西根 ET（UTC-4 EDT / UTC-5 EST），開獎約 7:29pm ET
-//   台灣 UTC+8：密西根 7:29pm = 隔天 7:29am（EDT）/ 8:29am（EST）
-//   爬蟲寫入日期使用密西根本地日期（網站已顯示 Michigan 時間），無需轉換。
+// 備援策略：官方 API 失敗時退回 lottonumbers.com HTML 爬蟲
+//
+// 時差校正（精確 DST）：
+//   EDT = UTC-4（3月第2個週日 → 11月第1個週日）
+//   EST = UTC-5（其餘時間）
+//   Fantasy 5 開獎約 7:29pm ET；查詢和寫入均使用密西根本地日期
 // ════════════════════════════════════════════════════════════
 
+// GraphQL endpoint — Content-Type: application/json 是繞過 CSRF 的關鍵
+const MI_GQL_URL     = 'https://www.michiganlottery.com/api/v1/'
+const MI_GQL_HEADERS = {
+  'Content-Type':    'application/json',
+  'Accept':          'application/json',
+  'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Referer':         'https://www.michiganlottery.com/',
+}
+
+// 精準 DST：計算密西根某個 UTC 時刻是否處於夏令時
+function michiganOffsetHours(utcDate: Date): number {
+  const y = utcDate.getUTCFullYear()
+
+  // 3月第2個週日 02:00 EST = 07:00 UTC
+  const mar1   = new Date(Date.UTC(y, 2, 1))
+  const mar1Dow = mar1.getUTCDay()                            // 0=Sun
+  const secondSunMar = 1 + (7 - mar1Dow) % 7 + 7             // first + 7
+  const dstStart = new Date(Date.UTC(y, 2, secondSunMar, 7)) // 07:00 UTC
+
+  // 11月第1個週日 02:00 EDT = 06:00 UTC
+  const nov1    = new Date(Date.UTC(y, 10, 1))
+  const nov1Dow = nov1.getUTCDay()
+  const firstSunNov = 1 + (7 - nov1Dow) % 7
+  const dstEnd  = new Date(Date.UTC(y, 10, firstSunNov, 6))  // 06:00 UTC
+
+  return utcDate >= dstStart && utcDate < dstEnd ? 4 : 5     // EDT=4, EST=5
+}
+
+// 將任意日期字串轉為密西根本地日期 "YYYY/MM/DD"
+function toMichiganDate(raw: string): string {
+  if (!raw) return ''
+
+  // 純日期 YYYY-MM-DD 或 YYYY/MM/DD
+  const plainISO = raw.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/)
+  if (plainISO) return `${plainISO[1]}/${plainISO[2]}/${plainISO[3]}`
+
+  // MM/DD/YYYY（美式）
+  const usDate = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+  if (usDate) {
+    return `${usDate[3]}/${usDate[1].padStart(2,'0')}/${usDate[2].padStart(2,'0')}`
+  }
+
+  // ISO UTC (含 T/Z) → 轉換為密西根本地時間
+  const d = new Date(raw)
+  if (isNaN(d.getTime())) return ''
+
+  const offsetH = michiganOffsetHours(d)
+  const et = new Date(d.getTime() - offsetH * 3_600_000)
+  const yyyy = et.getUTCFullYear()
+  const mm   = String(et.getUTCMonth() + 1).padStart(2, '0')
+  const dd   = String(et.getUTCDate()).padStart(2, '0')
+  return `${yyyy}/${mm}/${dd}`
+}
+
+// ────────────────────────────────────────────────────────────
+// 官方 GraphQL API：查詢單一日期的 Fantasy 5 開獎號碼
+//
+// 已驗證的 GraphQL 查詢格式：
+//   winningNumbers(logicalGameIdentifier:"FANTASY_5", drawDate:"YYYY-MM-DD")
+//   { drawNumbers }
+//
+// drawNumbers：5 個整數陣列（1-39），無開獎日（週日/假日）回傳 null
+// logicalGameIdentifier = "FANTASY_5" 只取主開獎，Double Play 從根本排除
+// ────────────────────────────────────────────────────────────
+async function fetchOneMiDraw(drawDate: string): Promise<OfficialDraw | null> {
+  const query = `{ winningNumbers(logicalGameIdentifier: "FANTASY_5", drawDate: "${drawDate}") { drawNumbers } }`
+
+  try {
+    const { data: res } = await axios.post<{
+      data?: { winningNumbers?: { drawNumbers: number[] | null } }
+    }>(MI_GQL_URL, { query }, {
+      headers: MI_GQL_HEADERS,
+      timeout: 12_000,
+    })
+
+    const nums = res?.data?.winningNumbers?.drawNumbers
+    if (!Array.isArray(nums) || nums.length !== 5) return null
+    if (!nums.every(n => Number.isInteger(n) && n >= 1 && n <= 39)) return null
+
+    const [yyyy, mm, dd] = drawDate.split('-')
+    return {
+      period:  `${yyyy}${mm}${dd}`,
+      date:    `${yyyy}/${mm}/${dd}`,
+      numbers: [...nums].sort((a, b) => a - b),
+    }
+  } catch {
+    return null   // 網路錯誤或速率限制時靜默跳過
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// 官方爬蟲主邏輯：向官方 GraphQL API 查詢過去 N 天
+//
+// 策略：生成過去 90 天（密西根本地日期）→ 分批 14 個同時查詢
+//       → 過濾 null（無開獎日）→ 排序最新優先
+//
+// 驗證碼（打在終端機）：
+//   印出 API 實際返回的原始資料樣本供確認
+// ────────────────────────────────────────────────────────────
+async function scrapeMiFantasy5Official(): Promise<OfficialDraw[]> {
+  const HISTORY_DAYS = 90
+  const BATCH_SIZE   = 14
+
+  // 計算「今天」在密西根時區的日期（UTC 減去 ET 偏移）
+  const nowUtc   = new Date()
+  const offsetH  = michiganOffsetHours(nowUtc)
+  const miNow    = new Date(nowUtc.getTime() - offsetH * 3_600_000)
+
+  // 生成過去 HISTORY_DAYS 天的密西根本地日期列表
+  const dates: string[] = []
+  for (let i = 1; i <= HISTORY_DAYS; i++) {
+    const d = new Date(miNow)
+    d.setUTCDate(d.getUTCDate() - i)
+    const yyyy = d.getUTCFullYear()
+    const mm   = String(d.getUTCMonth() + 1).padStart(2, '0')
+    const dd   = String(d.getUTCDate()).padStart(2, '0')
+    dates.push(`${yyyy}-${mm}-${dd}`)
+  }
+
+  console.log(`[mi-official] 查詢 ${dates.length} 天的開獎紀錄`)
+  console.log(`[mi-official] 範圍: ${dates[dates.length - 1]} → ${dates[0]}`)
+
+  const allDraws: OfficialDraw[] = []
+
+  // 分批並行查詢（每批 BATCH_SIZE 個，防止速率限制）
+  for (let i = 0; i < dates.length; i += BATCH_SIZE) {
+    const batch   = dates.slice(i, i + BATCH_SIZE)
+    const results = await Promise.all(batch.map(fetchOneMiDraw))
+    allDraws.push(...results.filter((d): d is OfficialDraw => d !== null))
+  }
+
+  if (allDraws.length === 0) {
+    throw new Error('官方 GraphQL API 返回 0 筆開獎資料')
+  }
+
+  const sorted = allDraws.sort((a, b) => b.period.localeCompare(a.period))
+
+  // ── 印出原始資料樣本供驗證 ──
+  console.log(`\n[mi-official] ✅ 成功取得 ${sorted.length} 期 Fantasy 5 開獎資料`)
+  console.log('[mi-official] 原始資料樣本（最新 5 期）↓')
+  sorted.slice(0, 5).forEach(d =>
+    console.log(`  ${d.date} [${d.numbers.join(', ')}]`)
+  )
+
+  return sorted
+}
+
+// ────────────────────────────────────────────────────────────
+// 備援：lottonumbers.com HTML 爬蟲（原有邏輯，完整保留）
+// ────────────────────────────────────────────────────────────
 const MONTH_MAP: Record<string, string> = {
   jan: '01', feb: '02', mar: '03', apr: '04',
   may: '05', jun: '06', jul: '07', aug: '08',
   sep: '09', oct: '10', nov: '11', dec: '12',
 }
 
-// ────────────────────────────────────────────────────────────
-// 密西根 Fantasy 5 HTML 解析器（已依實際 DOM 結構校正）
-//
-// 實際結構（lottonumbers.com）：
-//   <table class="mobFormat past-results">
-//     <tbody>
-//       <tr><td class="monthRow">May 2026</td></tr>   ← 月份分隔列
-//       <tr>
-//         <td class="date-row">Sat, May 2 2026</td>   ← 日期文字
-//         <td class="balls-row">
-//           <ul class="balls">
-//             <li class="ball ball">7</li>             ← 號碼（1-39）
-//             ...×5
-//           </ul>
-//         </td>
-//         <td class="jp-row">...</td>
-//         <td class="tw-row">...</td>
-//         <td class="link-row">
-//           <a href="/michigan-fantasy-5/numbers/05-02-2026">Payouts</a>
-//         </td>
-//       </tr>
-//     </tbody>
-//   </table>
-//
-// Double Play 在獨立 URL，此頁不存在，保留關鍵字過濾作安全防護。
-// ────────────────────────────────────────────────────────────
-function parseMiFantasy5(html: string): OfficialDraw[] {
+function parseMiFantasy5Html(html: string): OfficialDraw[] {
   const $ = cheerio.load(html)
   const draws: OfficialDraw[] = []
   let rowIdx = 0
 
-  // 精準選取 past-results 表格的每一個 tbody tr
   $('table.past-results tbody tr, table.mobFormat tbody tr').each((_, row) => {
     rowIdx++
-    const rowSnippet = $(row).text().replace(/\s+/g, ' ').trim().slice(0, 100)
-    console.log(`[mi-parser] row ${rowIdx}: "${rowSnippet}"`)
-
-    // 跳過月份分隔列（含 td.monthRow）
-    if ($(row).find('td.monthRow').length > 0) {
-      console.log(`[mi-parser] row ${rowIdx}: skip (monthRow)`)
-      return
-    }
-
-    // 安全防護：跳過任何含 "double" 字樣的列
+    if ($(row).find('td.monthRow').length > 0) return
     if ($(row).text().toLowerCase().includes('double')) {
-      console.log(`[mi-parser] row ${rowIdx}: skip (double play)`)
+      console.log(`[mi-html] row ${rowIdx}: skip (double play)`)
       return
     }
 
-    // ── 日期：優先從 Payouts 連結 href 提取 MM-DD-YYYY（最可靠）
-    let date   = ''
-    let period = ''
-
+    let date = '', period = ''
     const payoutsHref = $(row).find('td.link-row a').attr('href') ?? ''
     const hrefM = payoutsHref.match(/(\d{2})-(\d{2})-(\d{4})$/)
     if (hrefM) {
@@ -228,7 +344,6 @@ function parseMiFantasy5(html: string): OfficialDraw[] {
       date   = `${yyyy}/${mm}/${dd}`
       period = `${yyyy}${mm}${dd}`
     } else {
-      // Fallback：解析 td.date-row 文字 "Sat, May 2 2026"
       const dateText = $(row).find('td.date-row').text().trim()
       const dateM = dateText.match(/\w+,?\s+(\w+)\s+(\d{1,2})\s+(\d{4})/)
       if (dateM) {
@@ -239,77 +354,60 @@ function parseMiFantasy5(html: string): OfficialDraw[] {
         }
       }
     }
+    if (!date) return
 
-    if (!date) {
-      console.log(`[mi-parser] row ${rowIdx}: no date found, skip`)
-      return
-    }
-
-    // ── 號碼：td.balls-row ul.balls li.ball
     const nums: number[] = []
     $(row).find('td.balls-row li.ball').each((_, li) => {
       const n = parseInt($(li).text().trim(), 10)
       if (Number.isInteger(n) && n >= 1 && n <= 39) nums.push(n)
     })
-
-    console.log(`[mi-parser] row ${rowIdx}: date=${date} nums=[${nums.join(',')}]`)
-
-    if (nums.length === 5) {
-      draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
-    } else {
-      console.log(`[mi-parser] row ${rowIdx}: expected 5 nums, got ${nums.length}, skip`)
-    }
+    if (nums.length === 5) draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
   })
 
-  console.log(`[mi-parser] 完成：共解析 ${draws.length} 筆有效開獎`)
   return deduplicate(draws)
 }
 
-// 爬取當年與上一年，合併後去重
-async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
+async function scrapeMiFantasy5Fallback(): Promise<OfficialDraw[]> {
   const currentYear = new Date().getFullYear()
-  const years = [currentYear, currentYear - 1]
   const allDraws: OfficialDraw[] = []
   const errors: string[] = []
 
-  for (const year of years) {
-    const url   = `https://lottonumbers.com/michigan-fantasy-5/numbers/${year}`
-    const label = `lottonumbers.com/${year}`
-    console.log(`[fetch-draws/mi] 嘗試 [${label}]: ${url}`)
+  for (const year of [currentYear, currentYear - 1]) {
+    const url = `https://lottonumbers.com/michigan-fantasy-5/numbers/${year}`
+    console.log(`[mi-fallback] 嘗試 lottonumbers.com/${year}: ${url}`)
     try {
       const { data: html, status } = await axios.get<string>(url, {
-        headers: {
-          ...REQUEST_HEADERS,
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        timeout: 25_000,
-        maxRedirects: 5,
+        headers: { ...REQUEST_HEADERS, 'Accept-Language': 'en-US,en;q=0.9' },
+        timeout: 25_000, maxRedirects: 5,
       })
-      console.log(`[fetch-draws/mi] HTTP ${status} ← [${label}]`)
-
-      const draws = parseMiFantasy5(html)
-      console.log(`[fetch-draws/mi] ✅ [${label}] 解析 ${draws.length} 筆`)
+      console.log(`[mi-fallback] HTTP ${status} ← lottonumbers.com/${year}`)
+      const draws = parseMiFantasy5Html(html)
+      console.log(`[mi-fallback] ✅ 解析 ${draws.length} 筆`)
       allDraws.push(...draws)
     } catch (e: unknown) {
-      let detail = '未知錯誤'
-      if (e instanceof AxiosError) {
-        const code = e.response?.status
-        detail = code ? `HTTP ${code}` : `網路錯誤：${e.code ?? e.message}`
-      } else if (e instanceof Error) {
-        detail = e.message
-      }
-      console.error(`[fetch-draws/mi] ❌ [${label}] → ${detail}`)
-      errors.push(`[${label}] ${detail}`)
+      const detail = e instanceof AxiosError
+        ? (e.response?.status ? `HTTP ${e.response.status}` : `網路: ${e.code ?? e.message}`)
+        : (e instanceof Error ? e.message : '未知')
+      console.error(`[mi-fallback] ❌ lottonumbers.com/${year} → ${detail}`)
+      errors.push(detail)
     }
   }
 
   const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
-
-  if (result.length === 0) {
-    throw new Error(`密西根資料爬取失敗：${errors.join(' | ')}`)
-  }
-
+  if (result.length === 0) throw new Error(`備援也失敗：${errors.join(' | ')}`)
   return result
+}
+
+// 主入口：官方 API 優先，失敗則用備援
+async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
+  console.log('\n[mi] ══ 開始爬取 Michigan Fantasy 5（優先使用官方 API）══')
+  try {
+    return await scrapeMiFantasy5Official()
+  } catch (officialErr) {
+    const msg = officialErr instanceof Error ? officialErr.message : String(officialErr)
+    console.warn(`\n[mi] 官方 API 全部失敗，切換備援來源\n  原因：${msg}`)
+    return scrapeMiFantasy5Fallback()
+  }
 }
 
 // ════════════════════════════════════════════════════════════
