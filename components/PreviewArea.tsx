@@ -42,7 +42,7 @@ export default function PreviewArea() {
       </div>
 
       <p className="text-xs text-gray-400">
-        點擊任一號碼確認鎖定 → 整組候選名單自動排除並記錄軌跡
+        可連續點擊多個號碼逐一鎖定 — 鎖完最後一個時整組候選自動反灰
       </p>
     </div>
   )

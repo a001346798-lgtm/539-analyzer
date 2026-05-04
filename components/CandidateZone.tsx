@@ -13,9 +13,13 @@ export default function CandidateZone() {
   const candidates         = useLotteryStore(s => s.candidates)
   const excluded           = useLotteryStore(s => s.excluded)
   const locked             = useLotteryStore(s => s.locked)
+  const preview            = useLotteryStore(s => s.preview)
   const toggleCandidate    = useLotteryStore(s => s.toggleCandidate)
   const clearCandidates    = useLotteryStore(s => s.clearCandidates)
   const genPreview         = useLotteryStore(s => s.genPreview)
+
+  // preview 進行中時，清空按鈕會排除整組候選（批次終結）；否則只是重選
+  const hasActivePreview = preview.length > 0
 
   // How many candidates are still drawable (not yet excluded/locked)
   const drawable = candidates.filter(
@@ -43,9 +47,14 @@ export default function CandidateZone() {
           {candidates.length > 0 && (
             <button
               onClick={clearCandidates}
-              className="text-xs text-orange-400 hover:text-white px-2 py-1 rounded bg-orange-900/30 border border-orange-700/50 transition-colors"
+              title={hasActivePreview ? '放棄剩餘預覽號碼，整組候選自動反灰' : '清除候選名單重新選號（不反灰）'}
+              className={`text-xs px-2 py-1 rounded border transition-colors ${
+                hasActivePreview
+                  ? 'text-red-400 hover:text-white bg-red-900/30 border-red-700/50'
+                  : 'text-orange-400 hover:text-white bg-orange-900/30 border-orange-700/50'
+              }`}
             >
-              清空候選
+              {hasActivePreview ? '放棄並清空' : '清空候選'}
             </button>
           )}
 
@@ -104,7 +113,10 @@ export default function CandidateZone() {
             })}
           </div>
           <p className="text-xs text-gray-500">
-            可抽 {drawable} 個 · 本次抽 {actualDraw} 個 — 確認鎖定後整組候選自動反灰
+            可抽 {drawable} 個 · 本次抽 {actualDraw} 個
+            {hasActivePreview
+              ? ' — 可連續鎖定多個，鎖完最後一個或點「放棄並清空」時整組反灰'
+              : ' — 鎖定所有預覽號碼後整組候選自動反灰'}
           </p>
         </>
       )}

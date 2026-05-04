@@ -102,7 +102,18 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
       }
     }),
 
-  clearCandidates: () => set({ candidates: [], preview: [] }),
+  // 有進行中的 preview → 放棄剩餘項目並將整組候選排除（批次終結）
+  // 無 preview → 單純重置候選（重新選號，不排除）
+  clearCandidates: () => set((s) => {
+    if (s.preview.length > 0) {
+      return {
+        candidates: [],
+        preview:    [],
+        excluded:   Array.from(new Set([...s.excluded, ...s.candidates])),
+      }
+    }
+    return { candidates: [], preview: [] }
+  }),
 
   genPreview: (count) =>
     set((s) => {
@@ -115,31 +126,66 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
       }
     }),
 
+  // 允許多選：每次點擊只鎖定該號碼並將其從 preview 移除，
+  // 其他 preview 號碼保持可點擊。
+  // 當 preview 最後一個號碼被鎖定（preview 清空）→ 自動排除整組候選（批次終結）。
   confirmLock: (n) =>
     set((s) => {
       if (!s.preview.includes(n)) return s
-      const newExcluded = Array.from(new Set([...s.excluded, ...s.candidates]))
-      const newLocked   = [...s.locked, n].sort((a, b) => a - b)
+
+      const newPreview = s.preview.filter(x => x !== n)
+      const newLocked  = [...s.locked, n].sort((a, b) => a - b)
       const trace: TraceRecord = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        group: [...s.candidates],
+        id:       `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        group:    [...s.candidates],   // 拍照當前候選群，同批次多筆 trace 共用同一 group
         selected: n,
-        time: Date.now(),
+        time:     Date.now(),
       }
+
+      // 最後一個 preview 號碼被鎖定 → 批次終結，排除整組候選
+      if (newPreview.length === 0) {
+        return {
+          locked:     newLocked,
+          excluded:   Array.from(new Set([...s.excluded, ...s.candidates])),
+          preview:    [],
+          candidates: [],
+          traces:     [trace, ...s.traces],
+        }
+      }
+
+      // 還有其他 preview 號碼 → 只移除已鎖定的，其餘保持可點擊
       return {
-        locked: newLocked,
-        excluded: newExcluded,
-        preview: [],
-        candidates: [],
-        traces: [trace, ...s.traces],
+        locked:  newLocked,
+        preview: newPreview,
+        traces:  [trace, ...s.traces],
       }
     }),
 
   removeLocked: (n) =>
     set((s) => ({ locked: s.locked.filter(x => x !== n) })),
 
+  // 刪除軌跡並同步還原主號池狀態：
+  //   - 從 locked 移除 trace.selected（除非另一筆軌跡也選了同一號碼）
+  //   - 從 excluded 移除 trace.group 的號碼（除非其他軌跡的 group 仍涵蓋該號碼）
   deleteTrace: (id) =>
-    set((s) => ({ traces: s.traces.filter(t => t.id !== id) })),
+    set((s) => {
+      const trace = s.traces.find(t => t.id === id)
+      if (!trace) return s
+
+      const remaining      = s.traces.filter(t => t.id !== id)
+      const groupsOfRemain = new Set(remaining.flatMap(t => t.group))
+      const lockedByRemain = new Set(remaining.map(t => t.selected))
+
+      return {
+        traces:   remaining,
+        locked:   s.locked.filter(
+          x => x !== trace.selected || lockedByRemain.has(x)
+        ),
+        excluded: s.excluded.filter(
+          x => !trace.group.includes(x) || groupsOfRemain.has(x)
+        ),
+      }
+    }),
 
   clearLocked: () => set({ locked: [] }),
 
