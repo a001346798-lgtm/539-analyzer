@@ -17,7 +17,7 @@ export async function GET(req: Request) {
 
     const { data, error } = await db
       .from('user_history')
-      .select('period, numbers, saved_at')
+      .select('id, period, numbers, saved_at')   // id 必須回傳供刪除使用
       .eq('game', game)
       .order('saved_at', { ascending: true })
 
@@ -27,6 +27,7 @@ export async function GET(req: Request) {
     }
 
     const records = (data ?? []).map(row => ({
+      id:      row.id      as number,
       period:  row.period  as string,
       numbers: row.numbers as number[],
       date:    row.saved_at as string,
@@ -64,6 +65,39 @@ export async function POST(req: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[history] POST exception:', msg)
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
+
+// DELETE /api/history
+// 以 Supabase Primary Key (id) 精確刪除單筆紀錄
+// 絕不以 period 刪除（避免誤刪重複期數的其他紀錄）
+export async function DELETE(req: Request) {
+  const body = await req.json() as { id?: number }
+  const { id } = body
+
+  if (typeof id !== 'number' || !Number.isFinite(id)) {
+    return NextResponse.json({ error: 'id must be a finite number' }, { status: 400 })
+  }
+
+  try {
+    const db = getServerClient()
+
+    const { error } = await db
+      .from('user_history')
+      .delete()
+      .eq('id', id)
+
+    if (error) {
+      console.error('[history] DELETE error:', error.message)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+
+    console.log(`[history] DELETE: removed record id=${id}`)
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[history] DELETE exception:', msg)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

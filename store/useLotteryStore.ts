@@ -16,9 +16,10 @@ export interface TraceRecord {
 }
 
 export interface HistoryRecord {
-  period: string
+  id:      number    // Supabase PK — 刪除時必須用這個，禁止用 period
+  period:  string
   numbers: number[]
-  date: string
+  date:    string
 }
 
 export type PoolMode = 'select' | 'exclude'
@@ -53,6 +54,7 @@ interface Actions {
   setPeriod(p: string): void
   save(): Promise<void>
   loadHistory(): Promise<void>
+  deleteHistoryRecord(id: number): Promise<void>
   loadOfficialMissing(): Promise<void>
   bumpBacktest(): void
 }
@@ -219,8 +221,24 @@ export const useLotteryStore = create<State & Actions>((set, get) => ({
     try {
       const { gameMode } = get()
       const res  = await fetch(`/api/history?game=${gameMode}`)
-      const data = await res.json()
+      const data = await res.json() as { records?: HistoryRecord[] }
       set({ history: data.records ?? [] })
+    } catch {}
+  },
+
+  // 以 Supabase PK 精確刪除單筆，並同步更新 Zustand state
+  deleteHistoryRecord: async (id: number) => {
+    try {
+      const res = await fetch('/api/history', {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ id }),
+      })
+      if (!res.ok) return
+      set(s => ({
+        history:         s.history.filter(r => r.id !== id),
+        backtestVersion: s.backtestVersion + 1,   // 刷新勝率面板
+      }))
     } catch {}
   },
 

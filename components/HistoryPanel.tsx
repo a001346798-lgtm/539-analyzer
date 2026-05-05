@@ -8,17 +8,23 @@ const PERIOD_PLACEHOLDER: Record<string, string> = {
 }
 
 export default function HistoryPanel() {
-  const period      = useLotteryStore(s => s.period)
-  const locked      = useLotteryStore(s => s.locked)
-  const history     = useLotteryStore(s => s.history)
-  const gameMode    = useLotteryStore(s => s.gameMode)
-  const setPeriod   = useLotteryStore(s => s.setPeriod)
-  const save        = useLotteryStore(s => s.save)
-  const loadHistory = useLotteryStore(s => s.loadHistory)
+  const period              = useLotteryStore(s => s.period)
+  const locked              = useLotteryStore(s => s.locked)
+  const history             = useLotteryStore(s => s.history)
+  const gameMode            = useLotteryStore(s => s.gameMode)
+  const setPeriod           = useLotteryStore(s => s.setPeriod)
+  const save                = useLotteryStore(s => s.save)
+  const loadHistory         = useLotteryStore(s => s.loadHistory)
+  const deleteHistoryRecord = useLotteryStore(s => s.deleteHistoryRecord)
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
   const canSave = period.trim().length > 0 && locked.length > 0
+
+  const handleDelete = async (id: number, period: string) => {
+    if (!window.confirm(`確定要刪除這筆紀錄嗎？\n期數：${period}`)) return
+    await deleteHistoryRecord(id)
+  }
 
   return (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -51,10 +57,10 @@ export default function HistoryPanel() {
         <p className="text-gray-500 text-sm text-center py-3">尚無存檔紀錄</p>
       ) : (
         <div className="space-y-1.5 max-h-52 overflow-y-auto">
-          {[...history].reverse().map((rec, i) => (
+          {[...history].reverse().map(rec => (
             <div
-              key={i}
-              className="bg-gray-700/60 rounded px-3 py-2 flex items-center gap-3 text-sm"
+              key={rec.id}
+              className="bg-gray-700/60 rounded px-3 py-2 flex items-center gap-3 text-sm group"
             >
               <span className="text-gray-300 font-mono text-xs flex-shrink-0">{rec.period}</span>
               <span className="text-yellow-400 flex-1 truncate text-xs">
@@ -63,6 +69,13 @@ export default function HistoryPanel() {
               <span className="text-gray-500 text-xs flex-shrink-0">
                 {new Date(rec.date).toLocaleDateString('zh-TW')}
               </span>
+              <button
+                onClick={() => handleDelete(rec.id, rec.period)}
+                className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100"
+                title={`刪除期數 ${rec.period}（id=${rec.id}）`}
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>
