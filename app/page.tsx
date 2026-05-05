@@ -1,7 +1,8 @@
 import GameSwitcher  from '@/components/GameSwitcher'
 import LatestDraw    from '@/components/LatestDraw'
-import NumberPool    from '@/components/NumberPool'
-import CandidateZone from '@/components/CandidateZone'
+import NumberPool       from '@/components/NumberPool'
+import TailMissingPanel from '@/components/TailMissingPanel'
+import CandidateZone    from '@/components/CandidateZone'
 import PreviewArea   from '@/components/PreviewArea'
 import LockedNumbers from '@/components/LockedNumbers'
 import TraceHistory  from '@/components/TraceHistory'
@@ -19,6 +20,7 @@ export default function Home() {
         <GameSwitcher />
         <LatestDraw />
         <NumberPool />
+        <TailMissingPanel />
         <CandidateZone />
         <PreviewArea />
         <LockedNumbers />
