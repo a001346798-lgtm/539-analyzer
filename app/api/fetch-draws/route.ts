@@ -411,12 +411,169 @@ async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
 }
 
 // ════════════════════════════════════════════════════════════
-// GET /api/fetch-draws?game=tw539|mi_fantasy5
+// 加州 Fantasy 5 爬蟲
+//
+// 主策略：lotto-8.com CA Fantasy 5 歷史紀錄頁
+//   URL : https://www.lotto-8.com/usa/listltoFT5.asp
+//   格式：2 欄 table，日期 "DD/MM YY(DAY)"，號碼逗號分隔
+//
+// 備援策略：california.lottonumbers.com
+//   URL : california.lottonumbers.com/fantasy-5/past-numbers/{year}
+//   格式：4 欄 table，日期 "MM/DD/YYYY"，號碼 <ul><li>n</li>...</ul>
+//
+// 兩來源的日期已是 CA 本地日期，無需時差轉換（Supabase 時差由 backtest 處理）
+// ════════════════════════════════════════════════════════════
+
+// lotto-8.com CA Fantasy 5 解析器
+// 2 欄，日期格式 "DD/MM YY(DAY)"，e.g. "06/05 26(WED)" = 2026-05-06
+function parseLotto8Ca(html: string): OfficialDraw[] {
+  const $     = cheerio.load(html)
+  const draws: OfficialDraw[] = []
+
+  $('table tr').each((_, row) => {
+    const cells = $(row).find('td')
+    if (cells.length !== 2) return
+
+    const col0  = $(cells.eq(0)).text().replace(/\s+/g, ' ').trim()
+    const col1  = $(cells.eq(1)).text()
+    // "DD/MM YY(DAY)" → capture dd, mm, yy
+    const dateM = col0.match(/^(\d{2})\/(\d{2})\s+(\d{2,4})/)
+    if (!dateM) return
+
+    const dd      = dateM[1]
+    const mm      = dateM[2]
+    const ySuffix = dateM[3].replace(/\D/g, '')
+    const year    = ySuffix.length <= 2 ? `20${ySuffix}` : ySuffix
+    const date    = `${year}/${mm}/${dd}`
+    const period  = `${year}${mm}${dd}`
+
+    const nums = (col1.match(/\d+/g) ?? [])
+      .map(Number)
+      .filter(n => n >= 1 && n <= 39)
+
+    if (nums.length === 5) {
+      draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
+    }
+  })
+
+  return draws
+}
+
+// california.lottonumbers.com 解析器
+// 4 欄，日期 "MM/DD/YYYY"，號碼為 <ul><li>n</li>...</ul>
+function parseCaLottonumbers(html: string): OfficialDraw[] {
+  const $     = cheerio.load(html)
+  const draws: OfficialDraw[] = []
+
+  $('table tr').each((_, row) => {
+    const cells = $(row).find('td')
+    if (cells.length < 2) return
+
+    const dateText = $(cells.eq(0)).text().trim()
+    // "MM/DD/YYYY"
+    const dateM = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    if (!dateM) return
+
+    const mm   = dateM[1].padStart(2, '0')
+    const dd   = dateM[2].padStart(2, '0')
+    const yyyy = dateM[3]
+    const date   = `${yyyy}/${mm}/${dd}`
+    const period = `${yyyy}${mm}${dd}`
+
+    const nums: number[] = []
+    $(cells.eq(1)).find('li').each((_, li) => {
+      const n = parseInt($(li).text().trim(), 10)
+      if (n >= 1 && n <= 39) nums.push(n)
+    })
+
+    if (nums.length === 5) {
+      draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
+    }
+  })
+
+  return draws
+}
+
+async function scrapeCaFantasy5Official(): Promise<OfficialDraw[]> {
+  const url = 'https://www.lotto-8.com/usa/listltoFT5.asp'
+  console.log(`[ca-official] 準備請求：${url}`)
+
+  const { data: html, status } = await axios.get<string>(url, {
+    headers: REQUEST_HEADERS,
+    timeout: 20_000,
+    responseEncoding: 'binary',
+    maxRedirects: 5,
+  })
+  console.log(`[ca-official] HTTP ${status} ← lotto-8.com`)
+
+  const draws = deduplicate(parseLotto8Ca(html))
+  if (draws.length === 0) throw new Error('lotto-8.com 解析 0 筆')
+
+  const sorted = draws.sort((a, b) => b.period.localeCompare(a.period))
+  console.log(`\n[ca-official] ✅ 成功取得 ${sorted.length} 期 CA Fantasy 5`)
+  console.log('[ca-official] 原始資料樣本（最新 5 期）↓')
+  sorted.slice(0, 5).forEach(d =>
+    console.log(`  ${d.date} [${d.numbers.join(', ')}]`)
+  )
+  return sorted
+}
+
+async function scrapeCaFantasy5Fallback(): Promise<OfficialDraw[]> {
+  const currentYear = new Date().getFullYear()
+  const allDraws: OfficialDraw[] = []
+  const errors: string[] = []
+
+  for (const year of [currentYear, currentYear - 1]) {
+    const url = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}`
+    console.log(`[ca-fallback] 準備請求：${url}`)
+    try {
+      const { data: html, status } = await axios.get<string>(url, {
+        headers: { ...REQUEST_HEADERS, 'Accept-Language': 'en-US,en;q=0.9' },
+        timeout: 25_000,
+        maxRedirects: 5,
+      })
+      console.log(`[ca-fallback] HTTP ${status} ← california.lottonumbers.com/${year}`)
+      const draws = parseCaLottonumbers(html)
+      console.log(`[ca-fallback] ✅ 解析 ${draws.length} 筆`)
+      allDraws.push(...draws)
+    } catch (e: unknown) {
+      const detail = e instanceof AxiosError
+        ? (e.response?.status ? `HTTP ${e.response.status}` : `網路: ${e.code ?? e.message}`)
+        : (e instanceof Error ? e.message : '未知')
+      console.error(`[ca-fallback] ❌ ${url} → ${detail}`)
+      errors.push(detail)
+    }
+  }
+
+  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
+  if (result.length === 0) throw new Error(`備援也失敗：${errors.join(' | ')}`)
+  return result
+}
+
+async function scrapeCaFantasy5(): Promise<OfficialDraw[]> {
+  console.log('\n[ca] ══ 開始爬取 California Fantasy 5（lotto-8.com 優先）══')
+  try {
+    return await scrapeCaFantasy5Official()
+  } catch (officialErr) {
+    const msg = officialErr instanceof Error ? officialErr.message : String(officialErr)
+    console.warn(`\n[ca] 主來源失敗，切換備援\n  原因：${msg}`)
+    return scrapeCaFantasy5Fallback()
+  }
+}
+
+function getDrawTable(game: string): string {
+  if (game === 'mi_fantasy5') return 'mi_fantasy5_draws'
+  if (game === 'ca_fantasy5') return 'ca_fantasy5_draws'
+  return 'official_draws'
+}
+
+// ════════════════════════════════════════════════════════════
+// GET /api/fetch-draws?game=tw539|mi_fantasy5|ca_fantasy5
 // ════════════════════════════════════════════════════════════
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const game = searchParams.get('game') ?? 'tw539'
-  const table = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+  const table = getDrawTable(game)
 
   try {
     const db = getServerClient()
@@ -453,17 +610,19 @@ export async function GET(req: Request) {
 }
 
 // ════════════════════════════════════════════════════════════
-// POST /api/fetch-draws?game=tw539|mi_fantasy5
+// POST /api/fetch-draws?game=tw539|mi_fantasy5|ca_fantasy5
 // ════════════════════════════════════════════════════════════
 export async function POST(req: Request) {
   const { searchParams } = new URL(req.url)
   const game  = searchParams.get('game') ?? 'tw539'
-  const table = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+  const table = getDrawTable(game)
 
   try {
     const draws = game === 'mi_fantasy5'
       ? await scrapeMiFantasy5()
-      : await scrapeTw539()
+      : game === 'ca_fantasy5'
+        ? await scrapeCaFantasy5()
+        : await scrapeTw539()
 
     const db  = getServerClient()
     const rows = draws.map(d => ({ period: d.period, date: d.date, numbers: d.numbers }))

@@ -5,6 +5,7 @@ import { useLotteryStore } from '@/store/useLotteryStore'
 const PERIOD_PLACEHOLDER: Record<string, string> = {
   tw539:       '期數（例：11403001）',
   mi_fantasy5: '期數（例：20260502）',
+  ca_fantasy5: '期數（例：20260502）',
 }
 
 export default function HistoryPanel() {

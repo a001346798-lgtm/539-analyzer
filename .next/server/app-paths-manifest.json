@@ -1,5 +1,4 @@
 {
   "/page": "app/page.js",
-  "/api/fetch-draws/route": "app/api/fetch-draws/route.js",
-  "/api/history/route": "app/api/history/route.js"
+  "/api/fetch-draws/route": "app/api/fetch-draws/route.js"
 }

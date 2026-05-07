@@ -4,6 +4,7 @@ import { useLotteryStore, GameMode } from '@/store/useLotteryStore'
 const GAMES: { mode: GameMode; label: string; activeClass: string }[] = [
   { mode: 'tw539',       label: '今彩 539',    activeClass: 'bg-amber-600 text-white' },
   { mode: 'mi_fantasy5', label: '密西根天天樂', activeClass: 'bg-blue-600 text-white'  },
+  { mode: 'ca_fantasy5', label: '加州天天樂',   activeClass: 'bg-green-600 text-white'  },
 ]
 
 export default function GameSwitcher() {

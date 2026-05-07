@@ -28,11 +28,13 @@ function colorSummary(numbers: number[]): { red: number; blue: number; green: nu
 const GAME_LABEL: Record<string, string> = {
   tw539:       '今彩 539',
   mi_fantasy5: '密西根天天樂',
+  ca_fantasy5: '加州天天樂',
 }
 
 const GAME_DATE_NOTE: Record<string, string> = {
   tw539:       '',
   mi_fantasy5: '（密西根時間）',
+  ca_fantasy5: '（加州時間）',
 }
 
 export default function LatestDraw() {

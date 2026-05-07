@@ -6,11 +6,18 @@ function toYMD(d: string): string {
 }
 
 // 將 UTC 時間戳轉換為密西根本地日期（America/Detroit，自動處理 DST）
-// 密西根 7:29pm ET 開獎 = 隔天 7:29am（EDT）/ 8:29am（EST）台灣時間
-// 所以台灣用戶存檔時，UTC saved_at 對應的密西根日期即為該期開獎日期
 function toMichiganDate(utcStr: string): string {
   try {
     return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Detroit' }).format(new Date(utcStr))
+  } catch {
+    return toYMD(utcStr)
+  }
+}
+
+// 將 UTC 時間戳轉換為加州本地日期（America/Los_Angeles，自動處理 DST）
+function toCaliforniaDate(utcStr: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(utcStr))
   } catch {
     return toYMD(utcStr)
   }
@@ -38,7 +45,9 @@ export interface BacktestResponse {
 export async function GET(req: Request): Promise<Response> {
   const { searchParams } = new URL(req.url)
   const game         = searchParams.get('game') ?? 'tw539'
-  const officialTable = game === 'mi_fantasy5' ? 'mi_fantasy5_draws' : 'official_draws'
+  const officialTable = game === 'mi_fantasy5' ? 'mi_fantasy5_draws'
+                      : game === 'ca_fantasy5'  ? 'ca_fantasy5_draws'
+                      : 'official_draws'
 
   try {
     const db = getServerClient()
@@ -74,11 +83,11 @@ export async function GET(req: Request): Promise<Response> {
     let wins = 0, losses = 0, unmatched = 0
 
     for (const rec of histRows) {
-      // 密西根遊戲：將 UTC saved_at 轉換為密西根本地日期後比對
+      // 美國遊戲：將 UTC saved_at 轉換為當地本地日期後比對
       // 今彩539：直接取 UTC 日期（台灣存檔時間與開獎日期同步）
-      const lookupDate = game === 'mi_fantasy5'
-        ? toMichiganDate(rec.saved_at as string)
-        : toYMD(rec.saved_at as string)
+      const lookupDate = game === 'mi_fantasy5' ? toMichiganDate(rec.saved_at as string)
+                       : game === 'ca_fantasy5'  ? toCaliforniaDate(rec.saved_at as string)
+                       : toYMD(rec.saved_at as string)
 
       const official = byDate.get(lookupDate)
       const myNums   = rec.numbers as number[]

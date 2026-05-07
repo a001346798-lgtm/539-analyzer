@@ -23,7 +23,7 @@ export interface HistoryRecord {
 }
 
 export type PoolMode = 'select' | 'exclude'
-export type GameMode = 'tw539' | 'mi_fantasy5'
+export type GameMode = 'tw539' | 'mi_fantasy5' | 'ca_fantasy5'
 
 interface State {
   gameMode: GameMode
