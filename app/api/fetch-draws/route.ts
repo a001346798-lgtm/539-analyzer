@@ -413,19 +413,30 @@ async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
 // ════════════════════════════════════════════════════════════
 // 加州 Fantasy 5 爬蟲
 //
-// 主策略：lotto-8.com CA Fantasy 5 歷史紀錄頁
-//   URL : https://www.lotto-8.com/usa/listltoFT5.asp
-//   格式：2 欄 table，日期 "DD/MM YY(DAY)"，號碼逗號分隔
+// 主策略   (1) lotto-8.com — DD/MM YY(DAY) 2欄 table
+// 備援策略 (2) california.lottonumbers.com — MM/DD/YYYY 4欄 table，<li> 號碼
+// 第三備援 (3) lottery.net — href 內嵌日期 /MM-DD-YYYY，<li> 號碼
 //
-// 備援策略：california.lottonumbers.com
-//   URL : california.lottonumbers.com/fantasy-5/past-numbers/{year}
-//   格式：4 欄 table，日期 "MM/DD/YYYY"，號碼 <ul><li>n</li>...</ul>
-//
-// 兩來源的日期已是 CA 本地日期，無需時差轉換（Supabase 時差由 backtest 處理）
+// 所有來源的日期均已是 CA 本地日期，寫入 DB 時無需再轉換
 // ════════════════════════════════════════════════════════════
 
-// lotto-8.com CA Fantasy 5 解析器
-// 2 欄，日期格式 "DD/MM YY(DAY)"，e.g. "06/05 26(WED)" = 2026-05-06
+// 完整瀏覽器偽裝 Headers（英文優先，避免觸發 Geo-block）
+const CA_BROWSER_HEADERS = {
+  'User-Agent':               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept':                   'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language':          'en-US,en;q=0.9',
+  'Cache-Control':            'no-cache',
+  'Pragma':                   'no-cache',
+  'DNT':                      '1',
+  'Upgrade-Insecure-Requests':'1',
+  'Sec-Fetch-Dest':           'document',
+  'Sec-Fetch-Mode':           'navigate',
+  'Sec-Fetch-Site':           'none',
+  'Sec-Fetch-User':           '?1',
+}
+
+// ── 解析器 1：lotto-8.com ──────────────────────────────────
+// 2 欄 table，日期 "DD/MM YY(DAY)"，e.g. "08/05 26(FRI)" = 2026-05-08
 function parseLotto8Ca(html: string): OfficialDraw[] {
   const $     = cheerio.load(html)
   const draws: OfficialDraw[] = []
@@ -436,7 +447,6 @@ function parseLotto8Ca(html: string): OfficialDraw[] {
 
     const col0  = $(cells.eq(0)).text().replace(/\s+/g, ' ').trim()
     const col1  = $(cells.eq(1)).text()
-    // "DD/MM YY(DAY)" → capture dd, mm, yy
     const dateM = col0.match(/^(\d{2})\/(\d{2})\s+(\d{2,4})/)
     if (!dateM) return
 
@@ -459,8 +469,8 @@ function parseLotto8Ca(html: string): OfficialDraw[] {
   return draws
 }
 
-// california.lottonumbers.com 解析器
-// 4 欄，日期 "MM/DD/YYYY"，號碼為 <ul><li>n</li>...</ul>
+// ── 解析器 2：california.lottonumbers.com ─────────────────
+// 4 欄 table，日期 "MM/DD/YYYY"，號碼 <ul><li>n</li>...</ul>
 function parseCaLottonumbers(html: string): OfficialDraw[] {
   const $     = cheerio.load(html)
   const draws: OfficialDraw[] = []
@@ -470,8 +480,7 @@ function parseCaLottonumbers(html: string): OfficialDraw[] {
     if (cells.length < 2) return
 
     const dateText = $(cells.eq(0)).text().trim()
-    // "MM/DD/YYYY"
-    const dateM = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    const dateM    = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
     if (!dateM) return
 
     const mm   = dateM[1].padStart(2, '0')
@@ -494,30 +503,72 @@ function parseCaLottonumbers(html: string): OfficialDraw[] {
   return draws
 }
 
+// ── 解析器 3：lottery.net ─────────────────────────────────
+// dl 結構，日期嵌在 href="/california/fantasy-5/numbers/MM-DD-YYYY"
+// 號碼為 <ul><li>n</li>...</ul>，透過向上尋訪祖先找到 5 個合法號碼
+function parseLotteryNet(html: string): OfficialDraw[] {
+  const $     = cheerio.load(html)
+  const draws: OfficialDraw[] = []
+  const seen  = new Set<string>()
+
+  $('a[href*="/fantasy-5/numbers/"]').each((_, a) => {
+    const href  = $(a).attr('href') ?? ''
+    const dateM = href.match(/\/(\d{2})-(\d{2})-(\d{4})$/)
+    if (!dateM) return
+
+    const [, mm, dd, yyyy] = dateM
+    const period = `${yyyy}${mm}${dd}`
+    if (seen.has(period)) return
+    seen.add(period)
+
+    const date = `${yyyy}/${mm}/${dd}`
+
+    // 向上最多 8 層祖先，找到包含恰好 5 個 1-39 整數的 <ul><li> 集合
+    let nums: number[] = []
+    let cur = $(a).parent()
+    for (let depth = 0; depth < 8 && nums.length !== 5; depth++) {
+      const candidates = cur.find('li').map((_, li) => {
+        const t = $(li).text().trim()
+        const n = parseInt(t, 10)
+        return (Number.isInteger(n) && n >= 1 && n <= 39 && /^\d+$/.test(t)) ? n : NaN
+      }).get().filter((n): n is number => !isNaN(n))
+
+      if (candidates.length === 5) nums = candidates
+      else cur = cur.parent()
+    }
+
+    if (nums.length === 5) {
+      draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
+    }
+  })
+
+  return draws
+}
+
+// ── 爬蟲 1：lotto-8.com（主策略）────────────────────────
 async function scrapeCaFantasy5Official(): Promise<OfficialDraw[]> {
   const url = 'https://www.lotto-8.com/usa/listltoFT5.asp'
-  console.log(`[ca-official] 準備請求：${url}`)
+  console.log(`[ca-1] 準備請求：${url}`)
 
   const { data: html, status } = await axios.get<string>(url, {
-    headers: REQUEST_HEADERS,
-    timeout: 20_000,
-    responseEncoding: 'binary',
+    headers:  CA_BROWSER_HEADERS,
+    timeout:  45_000,
     maxRedirects: 5,
   })
-  console.log(`[ca-official] HTTP ${status} ← lotto-8.com`)
+  console.log(`[ca-1] HTTP ${status} ← lotto-8.com  (html size: ${html.length} chars)`)
 
   const draws = deduplicate(parseLotto8Ca(html))
-  if (draws.length === 0) throw new Error('lotto-8.com 解析 0 筆')
+  console.log(`[ca-1] parseLotto8Ca → ${draws.length} 筆`)
+  if (draws.length === 0) throw new Error('lotto-8.com 解析 0 筆（HTML 結構可能已變更）')
 
   const sorted = draws.sort((a, b) => b.period.localeCompare(a.period))
-  console.log(`\n[ca-official] ✅ 成功取得 ${sorted.length} 期 CA Fantasy 5`)
-  console.log('[ca-official] 原始資料樣本（最新 5 期）↓')
-  sorted.slice(0, 5).forEach(d =>
-    console.log(`  ${d.date} [${d.numbers.join(', ')}]`)
-  )
+  console.log(`\n[ca-1] ✅ 成功取得 ${sorted.length} 期 CA Fantasy 5`)
+  console.log('[ca-1] 樣本（最新 5 期）↓')
+  sorted.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
   return sorted
 }
 
+// ── 爬蟲 2：california.lottonumbers.com（備援 1）────────
 async function scrapeCaFantasy5Fallback(): Promise<OfficialDraw[]> {
   const currentYear = new Date().getFullYear()
   const allDraws: OfficialDraw[] = []
@@ -525,40 +576,87 @@ async function scrapeCaFantasy5Fallback(): Promise<OfficialDraw[]> {
 
   for (const year of [currentYear, currentYear - 1]) {
     const url = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}`
-    console.log(`[ca-fallback] 準備請求：${url}`)
+    console.log(`[ca-2] 準備請求：${url}`)
     try {
       const { data: html, status } = await axios.get<string>(url, {
-        headers: { ...REQUEST_HEADERS, 'Accept-Language': 'en-US,en;q=0.9' },
-        timeout: 25_000,
+        headers:  CA_BROWSER_HEADERS,
+        timeout:  45_000,
         maxRedirects: 5,
       })
-      console.log(`[ca-fallback] HTTP ${status} ← california.lottonumbers.com/${year}`)
+      console.log(`[ca-2] HTTP ${status} ← california.lottonumbers.com/${year}  (size: ${html.length} chars)`)
       const draws = parseCaLottonumbers(html)
-      console.log(`[ca-fallback] ✅ 解析 ${draws.length} 筆`)
+      console.log(`[ca-2] parseCaLottonumbers → ${draws.length} 筆`)
       allDraws.push(...draws)
     } catch (e: unknown) {
-      const detail = e instanceof AxiosError
-        ? (e.response?.status ? `HTTP ${e.response.status}` : `網路: ${e.code ?? e.message}`)
-        : (e instanceof Error ? e.message : '未知')
-      console.error(`[ca-fallback] ❌ ${url} → ${detail}`)
+      const ae = e instanceof AxiosError
+      const code   = ae ? (e.code ?? '') : ''
+      const status = ae ? (e.response?.status ?? '') : ''
+      const detail = status ? `HTTP ${status}` : `網路: ${code || (e instanceof Error ? e.message : '未知')}`
+      console.error(`[ca-2] ❌ ${url}`)
+      console.error(`       → ${detail}`)
+      if (ae && e.response?.data) console.error(`       response body: ${String(e.response.data).slice(0, 200)}`)
       errors.push(detail)
     }
   }
 
   const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
-  if (result.length === 0) throw new Error(`備援也失敗：${errors.join(' | ')}`)
+  if (result.length === 0) throw new Error(`備援1失敗：${errors.join(' | ')}`)
   return result
 }
 
+// ── 爬蟲 3：lottery.net（備援 2）────────────────────────
+async function scrapeCaFantasy5Third(): Promise<OfficialDraw[]> {
+  const currentYear = new Date().getFullYear()
+  const allDraws: OfficialDraw[] = []
+  const errors: string[] = []
+
+  for (const year of [currentYear, currentYear - 1]) {
+    const url = `https://www.lottery.net/california/fantasy-5/numbers/${year}`
+    console.log(`[ca-3] 準備請求：${url}`)
+    try {
+      const { data: html, status } = await axios.get<string>(url, {
+        headers:  CA_BROWSER_HEADERS,
+        timeout:  45_000,
+        maxRedirects: 5,
+      })
+      console.log(`[ca-3] HTTP ${status} ← lottery.net/${year}  (size: ${html.length} chars)`)
+      const draws = parseLotteryNet(html)
+      console.log(`[ca-3] parseLotteryNet → ${draws.length} 筆`)
+      allDraws.push(...draws)
+    } catch (e: unknown) {
+      const ae = e instanceof AxiosError
+      const code   = ae ? (e.code ?? '') : ''
+      const status = ae ? (e.response?.status ?? '') : ''
+      const detail = status ? `HTTP ${status}` : `網路: ${code || (e instanceof Error ? e.message : '未知')}`
+      console.error(`[ca-3] ❌ ${url}`)
+      console.error(`       → ${detail}`)
+      errors.push(detail)
+    }
+  }
+
+  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
+  if (result.length === 0) throw new Error(`備援2也失敗：${errors.join(' | ')}`)
+  return result
+}
+
+// ── 主入口：依序嘗試 3 個來源 ────────────────────────────
 async function scrapeCaFantasy5(): Promise<OfficialDraw[]> {
-  console.log('\n[ca] ══ 開始爬取 California Fantasy 5（lotto-8.com 優先）══')
+  console.log('\n[ca] ══ 開始爬取 California Fantasy 5 ══')
+
   try {
     return await scrapeCaFantasy5Official()
-  } catch (officialErr) {
-    const msg = officialErr instanceof Error ? officialErr.message : String(officialErr)
-    console.warn(`\n[ca] 主來源失敗，切換備援\n  原因：${msg}`)
-    return scrapeCaFantasy5Fallback()
+  } catch (e1) {
+    console.warn(`[ca] 來源1(lotto-8)失敗：${e1 instanceof Error ? e1.message : e1}`)
   }
+
+  try {
+    return await scrapeCaFantasy5Fallback()
+  } catch (e2) {
+    console.warn(`[ca] 來源2(lottonumbers)失敗：${e2 instanceof Error ? e2.message : e2}`)
+  }
+
+  console.warn('[ca] 嘗試來源3(lottery.net)…')
+  return scrapeCaFantasy5Third()
 }
 
 function getDrawTable(game: string): string {
