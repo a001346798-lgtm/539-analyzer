@@ -413,63 +413,65 @@ async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
 // ════════════════════════════════════════════════════════════
 // 加州 Fantasy 5 爬蟲
 //
-// 主策略   (1) lotto-8.com — DD/MM YY(DAY) 2欄 table
-// 備援策略 (2) california.lottonumbers.com — MM/DD/YYYY 4欄 table，<li> 號碼
-// 第三備援 (3) lottery.net — href 內嵌日期 /MM-DD-YYYY，<li> 號碼
+// 主策略：AllOrigins proxy → CA Lottery 官方 JSON API
+//   proxy  : https://api.allorigins.win/raw?url=TARGET
+//   target : calottery.com/api/DrawGameApi/DrawGamePastDrawResults/9/{page}/25
+//   透過第三方跳板繞過 Vercel 資料中心 IP 的 WAF 封鎖
 //
-// 所有來源的日期均已是 CA 本地日期，寫入 DB 時無需再轉換
+// 備援策略：corsproxy.io → california.lottonumbers.com（再失敗 → lottery.net）
+//   proxy  : https://corsproxy.io/?encodeURIComponent(TARGET)
 // ════════════════════════════════════════════════════════════
 
-// 完整瀏覽器偽裝 Headers（英文優先，避免觸發 Geo-block）
-const CA_BROWSER_HEADERS = {
-  'User-Agent':               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept':                   'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language':          'en-US,en;q=0.9',
-  'Cache-Control':            'no-cache',
-  'Pragma':                   'no-cache',
-  'DNT':                      '1',
-  'Upgrade-Insecure-Requests':'1',
-  'Sec-Fetch-Dest':           'document',
-  'Sec-Fetch-Mode':           'navigate',
-  'Sec-Fetch-Site':           'none',
-  'Sec-Fetch-User':           '?1',
+// 透過 Proxy 請求時使用精簡 Headers（Proxy 本身會補齊其餘欄位）
+const CA_PROXY_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept':     'text/html,application/json,*/*;q=0.8',
 }
 
-// ── 解析器 1：lotto-8.com ──────────────────────────────────
-// 2 欄 table，日期 "DD/MM YY(DAY)"，e.g. "08/05 26(FRI)" = 2026-05-08
-function parseLotto8Ca(html: string): OfficialDraw[] {
-  const $     = cheerio.load(html)
+// ── 解析器 A：calottery.com 官方 JSON ─────────────────────
+// DrawDate: /Date(ms)/ 或 ISO 字串；WinningNumbers: "01 02 03 04 05"
+// 以 Intl.DateTimeFormat 轉為 CA 本地日期（America/Los_Angeles，含 DST）
+function parseCaOfficialJson(raw: unknown): OfficialDraw[] {
+  let obj: { DrawGamePastDrawResults?: Array<{ DrawDate: string; WinningNumbers: string }> }
+  if (typeof raw === 'string') {
+    try { obj = JSON.parse(raw) } catch { return [] }
+  } else {
+    obj = raw as typeof obj
+  }
+
+  const results = obj?.DrawGamePastDrawResults
+  if (!Array.isArray(results) || results.length === 0) return []
+
   const draws: OfficialDraw[] = []
+  for (const row of results) {
+    let dateObj: Date | null = null
+    const netMs = String(row.DrawDate).match(/\/Date\((-?\d+)\)\//)
+    if (netMs) {
+      dateObj = new Date(parseInt(netMs[1], 10))
+    } else {
+      const d = new Date(row.DrawDate)
+      if (!isNaN(d.getTime())) dateObj = d
+    }
+    if (!dateObj) continue
 
-  $('table tr').each((_, row) => {
-    const cells = $(row).find('td')
-    if (cells.length !== 2) return
+    const caDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(dateObj)
+    const [yyyy, mm, dd] = caDate.split('-')
+    const date   = `${yyyy}/${mm}/${dd}`
+    const period = `${yyyy}${mm}${dd}`
 
-    const col0  = $(cells.eq(0)).text().replace(/\s+/g, ' ').trim()
-    const col1  = $(cells.eq(1)).text()
-    const dateM = col0.match(/^(\d{2})\/(\d{2})\s+(\d{2,4})/)
-    if (!dateM) return
-
-    const dd      = dateM[1]
-    const mm      = dateM[2]
-    const ySuffix = dateM[3].replace(/\D/g, '')
-    const year    = ySuffix.length <= 2 ? `20${ySuffix}` : ySuffix
-    const date    = `${year}/${mm}/${dd}`
-    const period  = `${year}${mm}${dd}`
-
-    const nums = (col1.match(/\d+/g) ?? [])
-      .map(Number)
+    const nums = String(row.WinningNumbers)
+      .split(/[\s,]+/)
+      .map(s => parseInt(s.trim(), 10))
       .filter(n => n >= 1 && n <= 39)
 
     if (nums.length === 5) {
       draws.push({ period, date, numbers: nums.sort((a, b) => a - b) })
     }
-  })
-
+  }
   return draws
 }
 
-// ── 解析器 2：california.lottonumbers.com ─────────────────
+// ── 解析器 B：california.lottonumbers.com ─────────────────
 // 4 欄 table，日期 "MM/DD/YYYY"，號碼 <ul><li>n</li>...</ul>
 function parseCaLottonumbers(html: string): OfficialDraw[] {
   const $     = cheerio.load(html)
@@ -503,13 +505,13 @@ function parseCaLottonumbers(html: string): OfficialDraw[] {
   return draws
 }
 
-// ── 解析器 3：lottery.net ─────────────────────────────────
+// ── 解析器 C：lottery.net ─────────────────────────────────
 // dl 結構，日期嵌在 href="/california/fantasy-5/numbers/MM-DD-YYYY"
 // 號碼為 <ul><li>n</li>...</ul>，透過向上尋訪祖先找到 5 個合法號碼
 function parseLotteryNet(html: string): OfficialDraw[] {
-  const $     = cheerio.load(html)
+  const $    = cheerio.load(html)
   const draws: OfficialDraw[] = []
-  const seen  = new Set<string>()
+  const seen = new Set<string>()
 
   $('a[href*="/fantasy-5/numbers/"]').each((_, a) => {
     const href  = $(a).attr('href') ?? ''
@@ -523,7 +525,7 @@ function parseLotteryNet(html: string): OfficialDraw[] {
 
     const date = `${yyyy}/${mm}/${dd}`
 
-    // 向上最多 8 層祖先，找到包含恰好 5 個 1-39 整數的 <ul><li> 集合
+    // 向上最多 8 層祖先，找到包含恰好 5 個 1-39 整數的 <li> 集合
     let nums: number[] = []
     let cur = $(a).parent()
     for (let depth = 0; depth < 8 && nums.length !== 5; depth++) {
@@ -545,118 +547,146 @@ function parseLotteryNet(html: string): OfficialDraw[] {
   return draws
 }
 
-// ── 爬蟲 1：lotto-8.com（主策略）────────────────────────
-async function scrapeCaFantasy5Official(): Promise<OfficialDraw[]> {
-  const url = 'https://www.lotto-8.com/usa/listltoFT5.asp'
-  console.log(`[ca-1] 準備請求：${url}`)
+// ── 策略 1：AllOrigins proxy → calottery.com JSON API ─────
+// allorigins.win 以境外 IP 代理請求，繞過 Vercel 資料中心封鎖
+async function scrapeCaViaAllOrigins(): Promise<OfficialDraw[]> {
+  const PAGE_SIZE = 25
+  const PAGES     = 4      // 4 × 25 = 最多 100 筆 ≈ 4 個月
+  const allDraws: OfficialDraw[] = []
 
-  const { data: html, status } = await axios.get<string>(url, {
-    headers:  CA_BROWSER_HEADERS,
-    timeout:  45_000,
-    maxRedirects: 5,
-  })
-  console.log(`[ca-1] HTTP ${status} ← lotto-8.com  (html size: ${html.length} chars)`)
+  for (let page = 1; page <= PAGES; page++) {
+    const target   = `https://www.calottery.com/api/DrawGameApi/DrawGamePastDrawResults/9/${page}/${PAGE_SIZE}`
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`
+    console.log(`[ca-allorigins] Page ${page} 準備請求：${proxyUrl}`)
 
-  const draws = deduplicate(parseLotto8Ca(html))
-  console.log(`[ca-1] parseLotto8Ca → ${draws.length} 筆`)
-  if (draws.length === 0) throw new Error('lotto-8.com 解析 0 筆（HTML 結構可能已變更）')
+    try {
+      const { data, status } = await axios.get<unknown>(proxyUrl, {
+        headers: CA_PROXY_HEADERS,
+        timeout: 20_000,
+      })
+      console.log(`[ca-allorigins] HTTP ${status} ← allorigins.win (page ${page})`)
 
-  const sorted = draws.sort((a, b) => b.period.localeCompare(a.period))
-  console.log(`\n[ca-1] ✅ 成功取得 ${sorted.length} 期 CA Fantasy 5`)
-  console.log('[ca-1] 樣本（最新 5 期）↓')
-  sorted.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
-  return sorted
+      const draws = parseCaOfficialJson(data)
+      console.log(`[ca-allorigins] parseCaOfficialJson → ${draws.length} 筆`)
+      allDraws.push(...draws)
+
+      // 已到最後一頁
+      const arr = (data as { DrawGamePastDrawResults?: unknown[] })?.DrawGamePastDrawResults
+      if (Array.isArray(arr) && arr.length < PAGE_SIZE) break
+    } catch (e: unknown) {
+      const ae     = e instanceof AxiosError
+      const code   = ae ? (e.code ?? '') : ''
+      const status = ae ? (e.response?.status ?? '') : ''
+      const detail = status ? `HTTP ${status}` : `網路: ${code || (e instanceof Error ? e.message : '未知')}`
+      console.error(`[ca-allorigins] ❌ Page ${page} → ${detail}`)
+      if (ae && e.response?.data) {
+        console.error(`               response: ${String(e.response.data).slice(0, 300)}`)
+      }
+      if (page === 1) throw new Error(`AllOrigins 第1頁失敗：${detail}`)
+      break  // 後續頁失敗時以目前資料為主
+    }
+  }
+
+  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
+  if (result.length === 0) throw new Error('AllOrigins + CA API 解析 0 筆（API 結構可能已變更）')
+
+  console.log(`\n[ca-allorigins] ✅ 成功取得 ${result.length} 期 CA Fantasy 5`)
+  console.log('[ca-allorigins] 樣本（最新 5 期）↓')
+  result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
+  return result
 }
 
-// ── 爬蟲 2：california.lottonumbers.com（備援 1）────────
-async function scrapeCaFantasy5Fallback(): Promise<OfficialDraw[]> {
+// ── 策略 2：corsproxy.io → lottonumbers / lottery.net ──────
+// 先嘗試 california.lottonumbers.com；仍空則再試 lottery.net
+async function scrapeCaViaCorsproxy(): Promise<OfficialDraw[]> {
   const currentYear = new Date().getFullYear()
-  const allDraws: OfficialDraw[] = []
-  const errors: string[] = []
+  const allErrors: string[] = []
 
+  // ── corsproxy → california.lottonumbers.com ──
+  const ltnDraws: OfficialDraw[] = []
   for (const year of [currentYear, currentYear - 1]) {
-    const url = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}`
-    console.log(`[ca-2] 準備請求：${url}`)
+    const target   = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}`
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(target)}`
+    console.log(`[ca-corsproxy-A] 準備請求：${proxyUrl}`)
     try {
-      const { data: html, status } = await axios.get<string>(url, {
-        headers:  CA_BROWSER_HEADERS,
-        timeout:  45_000,
-        maxRedirects: 5,
+      const { data: html, status } = await axios.get<string>(proxyUrl, {
+        headers: CA_PROXY_HEADERS,
+        timeout: 20_000,
       })
-      console.log(`[ca-2] HTTP ${status} ← california.lottonumbers.com/${year}  (size: ${html.length} chars)`)
+      console.log(`[ca-corsproxy-A] HTTP ${status} ← corsproxy→lottonumbers/${year}  (size: ${html.length})`)
       const draws = parseCaLottonumbers(html)
-      console.log(`[ca-2] parseCaLottonumbers → ${draws.length} 筆`)
-      allDraws.push(...draws)
+      console.log(`[ca-corsproxy-A] parseCaLottonumbers → ${draws.length} 筆`)
+      ltnDraws.push(...draws)
     } catch (e: unknown) {
-      const ae = e instanceof AxiosError
+      const ae     = e instanceof AxiosError
       const code   = ae ? (e.code ?? '') : ''
       const status = ae ? (e.response?.status ?? '') : ''
       const detail = status ? `HTTP ${status}` : `網路: ${code || (e instanceof Error ? e.message : '未知')}`
-      console.error(`[ca-2] ❌ ${url}`)
-      console.error(`       → ${detail}`)
-      if (ae && e.response?.data) console.error(`       response body: ${String(e.response.data).slice(0, 200)}`)
-      errors.push(detail)
+      console.error(`[ca-corsproxy-A] ❌ ${target}`)
+      console.error(`                → ${detail}`)
+      if (ae && e.response?.data) {
+        console.error(`                response: ${String(e.response.data).slice(0, 300)}`)
+      }
+      allErrors.push(`lottonumbers/${year}: ${detail}`)
     }
   }
 
-  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
-  if (result.length === 0) throw new Error(`備援1失敗：${errors.join(' | ')}`)
-  return result
-}
+  if (ltnDraws.length > 0) {
+    const result = deduplicate(ltnDraws).sort((a, b) => b.period.localeCompare(a.period))
+    console.log(`\n[ca-corsproxy-A] ✅ 成功取得 ${result.length} 期`)
+    result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
+    return result
+  }
 
-// ── 爬蟲 3：lottery.net（備援 2）────────────────────────
-async function scrapeCaFantasy5Third(): Promise<OfficialDraw[]> {
-  const currentYear = new Date().getFullYear()
-  const allDraws: OfficialDraw[] = []
-  const errors: string[] = []
-
+  // ── corsproxy → lottery.net（最終備援）──
+  console.warn('[ca-corsproxy-B] lottonumbers 全部失敗，嘗試 lottery.net …')
+  const lnDraws: OfficialDraw[] = []
   for (const year of [currentYear, currentYear - 1]) {
-    const url = `https://www.lottery.net/california/fantasy-5/numbers/${year}`
-    console.log(`[ca-3] 準備請求：${url}`)
+    const target   = `https://www.lottery.net/california/fantasy-5/numbers/${year}`
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(target)}`
+    console.log(`[ca-corsproxy-B] 準備請求：${proxyUrl}`)
     try {
-      const { data: html, status } = await axios.get<string>(url, {
-        headers:  CA_BROWSER_HEADERS,
-        timeout:  45_000,
-        maxRedirects: 5,
+      const { data: html, status } = await axios.get<string>(proxyUrl, {
+        headers: CA_PROXY_HEADERS,
+        timeout: 20_000,
       })
-      console.log(`[ca-3] HTTP ${status} ← lottery.net/${year}  (size: ${html.length} chars)`)
+      console.log(`[ca-corsproxy-B] HTTP ${status} ← corsproxy→lottery.net/${year}  (size: ${html.length})`)
       const draws = parseLotteryNet(html)
-      console.log(`[ca-3] parseLotteryNet → ${draws.length} 筆`)
-      allDraws.push(...draws)
+      console.log(`[ca-corsproxy-B] parseLotteryNet → ${draws.length} 筆`)
+      lnDraws.push(...draws)
     } catch (e: unknown) {
-      const ae = e instanceof AxiosError
+      const ae     = e instanceof AxiosError
       const code   = ae ? (e.code ?? '') : ''
       const status = ae ? (e.response?.status ?? '') : ''
       const detail = status ? `HTTP ${status}` : `網路: ${code || (e instanceof Error ? e.message : '未知')}`
-      console.error(`[ca-3] ❌ ${url}`)
-      console.error(`       → ${detail}`)
-      errors.push(detail)
+      console.error(`[ca-corsproxy-B] ❌ ${target}`)
+      console.error(`                → ${detail}`)
+      allErrors.push(`lottery.net/${year}: ${detail}`)
     }
   }
 
-  const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
-  if (result.length === 0) throw new Error(`備援2也失敗：${errors.join(' | ')}`)
+  const result = deduplicate(lnDraws).sort((a, b) => b.period.localeCompare(a.period))
+  if (result.length === 0) {
+    throw new Error(`corsproxy 全部失敗：${allErrors.join(' | ')}`)
+  }
+
+  console.log(`\n[ca-corsproxy-B] ✅ 成功取得 ${result.length} 期`)
+  result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
   return result
 }
 
-// ── 主入口：依序嘗試 3 個來源 ────────────────────────────
+// ── 主入口：AllOrigins → corsproxy ───────────────────────
 async function scrapeCaFantasy5(): Promise<OfficialDraw[]> {
   console.log('\n[ca] ══ 開始爬取 California Fantasy 5 ══')
 
   try {
-    return await scrapeCaFantasy5Official()
+    return await scrapeCaViaAllOrigins()
   } catch (e1) {
-    console.warn(`[ca] 來源1(lotto-8)失敗：${e1 instanceof Error ? e1.message : e1}`)
+    console.warn(`[ca] AllOrigins 失敗：${e1 instanceof Error ? e1.message : e1}`)
+    console.warn('[ca] 切換備援：corsproxy.io …')
   }
 
-  try {
-    return await scrapeCaFantasy5Fallback()
-  } catch (e2) {
-    console.warn(`[ca] 來源2(lottonumbers)失敗：${e2 instanceof Error ? e2.message : e2}`)
-  }
-
-  console.warn('[ca] 嘗試來源3(lottery.net)…')
-  return scrapeCaFantasy5Third()
+  return scrapeCaViaCorsproxy()
 }
 
 function getDrawTable(game: string): string {
