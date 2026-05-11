@@ -424,8 +424,10 @@ async function scrapeMiFantasy5(): Promise<OfficialDraw[]> {
 
 // 透過 Proxy 請求時使用精簡 Headers（Proxy 本身會補齊其餘欄位）
 const CA_PROXY_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  'Accept':     'text/html,application/json,*/*;q=0.8',
+  'User-Agent':    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept':        'text/html,application/json,*/*;q=0.8',
+  'Cache-Control': 'no-cache, no-store',
+  'Pragma':        'no-cache',
 }
 
 // ── 解析器 A：calottery.com 官方 JSON ─────────────────────
@@ -555,8 +557,8 @@ async function scrapeCaViaAllOrigins(): Promise<OfficialDraw[]> {
   const allDraws: OfficialDraw[] = []
 
   for (let page = 1; page <= PAGES; page++) {
-    const target   = `https://www.calottery.com/api/DrawGameApi/DrawGamePastDrawResults/9/${page}/${PAGE_SIZE}`
-    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`
+    const target   = `https://www.calottery.com/api/DrawGameApi/DrawGamePastDrawResults/9/${page}/${PAGE_SIZE}?_t=${Date.now()}`
+    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}&_t=${Date.now()}`
     console.log(`[ca-allorigins] Page ${page} 準備請求：${proxyUrl}`)
 
     try {
@@ -590,8 +592,8 @@ async function scrapeCaViaAllOrigins(): Promise<OfficialDraw[]> {
   const result = deduplicate(allDraws).sort((a, b) => b.period.localeCompare(a.period))
   if (result.length === 0) throw new Error('AllOrigins + CA API 解析 0 筆（API 結構可能已變更）')
 
-  console.log(`\n[ca-allorigins] ✅ 成功取得 ${result.length} 期 CA Fantasy 5`)
-  console.log('[ca-allorigins] 樣本（最新 5 期）↓')
+  console.log(`\n[ca] ✅ 成功從 allorigins.win → calottery.com 抓取，最新一期日期為：${result[0]?.date ?? '未知'}`)
+  console.log(`[ca-allorigins] 共 ${result.length} 期，樣本（最新 5 期）↓`)
   result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
   return result
 }
@@ -605,7 +607,7 @@ async function scrapeCaViaCorsproxy(): Promise<OfficialDraw[]> {
   // ── corsproxy → california.lottonumbers.com ──
   const ltnDraws: OfficialDraw[] = []
   for (const year of [currentYear, currentYear - 1]) {
-    const target   = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}`
+    const target   = `https://california.lottonumbers.com/fantasy-5/past-numbers/${year}?_t=${Date.now()}`
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(target)}`
     console.log(`[ca-corsproxy-A] 準備請求：${proxyUrl}`)
     try {
@@ -633,7 +635,8 @@ async function scrapeCaViaCorsproxy(): Promise<OfficialDraw[]> {
 
   if (ltnDraws.length > 0) {
     const result = deduplicate(ltnDraws).sort((a, b) => b.period.localeCompare(a.period))
-    console.log(`\n[ca-corsproxy-A] ✅ 成功取得 ${result.length} 期`)
+    console.log(`\n[ca] ✅ 成功從 corsproxy.io → california.lottonumbers.com 抓取，最新一期日期為：${result[0]?.date ?? '未知'}`)
+    console.log(`[ca-corsproxy-A] 共 ${result.length} 期，樣本（最新 5 期）↓`)
     result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
     return result
   }
@@ -642,7 +645,7 @@ async function scrapeCaViaCorsproxy(): Promise<OfficialDraw[]> {
   console.warn('[ca-corsproxy-B] lottonumbers 全部失敗，嘗試 lottery.net …')
   const lnDraws: OfficialDraw[] = []
   for (const year of [currentYear, currentYear - 1]) {
-    const target   = `https://www.lottery.net/california/fantasy-5/numbers/${year}`
+    const target   = `https://www.lottery.net/california/fantasy-5/numbers/${year}?_t=${Date.now()}`
     const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(target)}`
     console.log(`[ca-corsproxy-B] 準備請求：${proxyUrl}`)
     try {
@@ -670,7 +673,8 @@ async function scrapeCaViaCorsproxy(): Promise<OfficialDraw[]> {
     throw new Error(`corsproxy 全部失敗：${allErrors.join(' | ')}`)
   }
 
-  console.log(`\n[ca-corsproxy-B] ✅ 成功取得 ${result.length} 期`)
+  console.log(`\n[ca] ✅ 成功從 corsproxy.io → lottery.net 抓取，最新一期日期為：${result[0]?.date ?? '未知'}`)
+  console.log(`[ca-corsproxy-B] 共 ${result.length} 期，樣本（最新 5 期）↓`)
   result.slice(0, 5).forEach(d => console.log(`  ${d.date} [${d.numbers.join(', ')}]`))
   return result
 }
