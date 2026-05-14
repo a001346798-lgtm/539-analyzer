@@ -58,7 +58,7 @@ export default function HistoryPanel() {
         <p className="text-gray-500 text-sm text-center py-3">尚無存檔紀錄</p>
       ) : (
         <div className="space-y-1.5 max-h-52 overflow-y-auto">
-          {[...history].reverse().map(rec => (
+          {history.map(rec => (
             <div
               key={rec.id}
               className="bg-gray-700/60 rounded px-3 py-2 flex items-center gap-3 text-sm group"

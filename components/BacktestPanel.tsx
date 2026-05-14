@@ -134,9 +134,7 @@ export default function BacktestPanel() {
               <div>
                 <h2 className="text-white font-bold text-base">五不中 勝率回測</h2>
                 <p className="text-[10px] text-gray-500 mt-0.5">
-                  {gameMode === 'tw539'
-                    ? '以存檔日期對應官方開獎日，0 中為過關'
-                    : '以存檔日期（密西根時區）對應開獎日，0 中為過關'}
+                  以期數對應官方開獎，0 中為過關
                 </p>
               </div>
               <div className="flex items-center gap-2">

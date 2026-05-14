@@ -19,7 +19,7 @@ export async function GET(req: Request) {
       .from('user_history')
       .select('id, period, numbers, saved_at')   // id 必須回傳供刪除使用
       .eq('game', game)
-      .order('saved_at', { ascending: true })
+      .order('period', { ascending: false })
 
     if (error) {
       console.error('[history] GET error:', error.message)

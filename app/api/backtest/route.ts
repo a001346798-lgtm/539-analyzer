@@ -1,28 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getServerClient } from '@/lib/supabase'
 
-function toYMD(d: string): string {
-  return d.replace(/\//g, '-').slice(0, 10)
-}
-
-// 將 UTC 時間戳轉換為密西根本地日期（America/Detroit，自動處理 DST）
-function toMichiganDate(utcStr: string): string {
-  try {
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Detroit' }).format(new Date(utcStr))
-  } catch {
-    return toYMD(utcStr)
-  }
-}
-
-// 將 UTC 時間戳轉換為加州本地日期（America/Los_Angeles，自動處理 DST）
-function toCaliforniaDate(utcStr: string): string {
-  try {
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(new Date(utcStr))
-  } catch {
-    return toYMD(utcStr)
-  }
-}
-
 export interface BacktestDetail {
   period:          string
   myNumbers:       number[]
@@ -54,9 +32,9 @@ export async function GET(req: Request): Promise<Response> {
 
     const [histResult, offResult] = await Promise.all([
       db.from('user_history')
-        .select('period, numbers, saved_at')
+        .select('period, numbers')
         .eq('game', game)
-        .order('saved_at', { ascending: true }),
+        .order('period', { ascending: true }),
 
       db.from(officialTable)
         .select('period, date, numbers')
@@ -69,10 +47,10 @@ export async function GET(req: Request): Promise<Response> {
     const histRows = histResult.data ?? []
     const offRows  = offResult.data  ?? []
 
-    // 建立 date → official draw 的查找表
-    const byDate = new Map<string, { numbers: number[]; period: string; date: string }>()
+    // 建立 period → official draw 的查找表（用期數精確比對，補登時不受存檔日期影響）
+    const byPeriod = new Map<string, { numbers: number[]; period: string; date: string }>()
     for (const r of offRows) {
-      byDate.set(toYMD(r.date as string), {
+      byPeriod.set(r.period as string, {
         numbers: r.numbers as number[],
         period:  r.period  as string,
         date:    r.date    as string,
@@ -83,13 +61,7 @@ export async function GET(req: Request): Promise<Response> {
     let wins = 0, losses = 0, unmatched = 0
 
     for (const rec of histRows) {
-      // 美國遊戲：將 UTC saved_at 轉換為當地本地日期後比對
-      // 今彩539：直接取 UTC 日期（台灣存檔時間與開獎日期同步）
-      const lookupDate = game === 'mi_fantasy5' ? toMichiganDate(rec.saved_at as string)
-                       : game === 'ca_fantasy5'  ? toCaliforniaDate(rec.saved_at as string)
-                       : toYMD(rec.saved_at as string)
-
-      const official = byDate.get(lookupDate)
+      const official = byPeriod.get(rec.period as string)
       const myNums   = rec.numbers as number[]
 
       if (!official) {
