@@ -2,6 +2,16 @@
 import { useEffect } from 'react'
 import { useLotteryStore } from '@/store/useLotteryStore'
 
+function formatPeriodToDateString(period: string): string {
+  if (/^\d{8}$/.test(period) && period.startsWith('20')) {
+    const year  = period.slice(0, 4)
+    const month = parseInt(period.slice(4, 6), 10)
+    const day   = parseInt(period.slice(6, 8), 10)
+    return `${year}/${month}/${day}`
+  }
+  return period
+}
+
 const PERIOD_PLACEHOLDER: Record<string, string> = {
   tw539:       '期數（例：11403001）',
   mi_fantasy5: '期數（例：20260502）',
@@ -68,7 +78,7 @@ export default function HistoryPanel() {
                 [{rec.numbers.join(', ')}]
               </span>
               <span className="text-gray-500 text-xs flex-shrink-0">
-                {new Date(rec.date).toLocaleDateString('zh-TW')}
+                {formatPeriodToDateString(rec.period)}
               </span>
               <button
                 onClick={() => handleDelete(rec.id, rec.period)}

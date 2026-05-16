@@ -1,6 +1,6 @@
 {
-  "/api/history/route": "app/api/history/route.js",
   "/page": "app/page.js",
+  "/api/history/route": "app/api/history/route.js",
   "/api/fetch-draws/route": "app/api/fetch-draws/route.js",
   "/api/backtest/route": "app/api/backtest/route.js"
 }
