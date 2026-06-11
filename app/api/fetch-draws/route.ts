@@ -737,6 +737,24 @@ function getDrawTable(game: string): string {
   return 'official_draws'
 }
 
+async function scrapeGame(game: string): Promise<OfficialDraw[]> {
+  return game === 'mi_fantasy5'
+    ? await scrapeMiFantasy5()
+    : game === 'ca_fantasy5'
+      ? await scrapeCaFantasy5()
+      : await scrapeTw539()
+}
+
+function liveDrawResponse(draws: OfficialDraw[], warning?: string) {
+  return NextResponse.json({
+    draws,
+    missing: calcMissing(draws),
+    updatedAt: new Date().toISOString(),
+    persisted: false,
+    warning,
+  })
+}
+
 // ════════════════════════════════════════════════════════════
 // GET /api/fetch-draws?game=tw539|mi_fantasy5|ca_fantasy5
 // ════════════════════════════════════════════════════════════
@@ -755,7 +773,8 @@ export async function GET(req: Request) {
 
     if (error) {
       console.error(`[fetch-draws] GET error (${table}):`, error.message)
-      return NextResponse.json({ draws: [], missing: {}, updatedAt: '' })
+      const liveDraws = await scrapeGame(game)
+      return liveDrawResponse(liveDraws, error.message)
     }
 
     const draws: OfficialDraw[] = (data ?? []).map(r => ({
@@ -763,6 +782,11 @@ export async function GET(req: Request) {
       date:    r.date    as string,
       numbers: r.numbers as number[],
     }))
+
+    if (draws.length === 0) {
+      const liveDraws = await scrapeGame(game)
+      return liveDrawResponse(liveDraws, 'Supabase returned no rows')
+    }
 
     const updatedAt = (data?.[0] as { created_at?: string } | null)?.created_at ?? ''
 
@@ -775,7 +799,13 @@ export async function GET(req: Request) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[fetch-draws] GET exception (${table}):`, msg)
-    return NextResponse.json({ draws: [], missing: {}, updatedAt: '', error: msg })
+    try {
+      const liveDraws = await scrapeGame(game)
+      return liveDrawResponse(liveDraws, msg)
+    } catch (scrapeErr) {
+      const scrapeMsg = scrapeErr instanceof Error ? scrapeErr.message : String(scrapeErr)
+      return NextResponse.json({ draws: [], missing: {}, updatedAt: '', error: `${msg}; live scrape failed: ${scrapeMsg}` })
+    }
   }
 }
 
@@ -788,12 +818,9 @@ export async function POST(req: Request) {
   const table = getDrawTable(game)
 
   try {
-    const draws = game === 'mi_fantasy5'
-      ? await scrapeMiFantasy5()
-      : game === 'ca_fantasy5'
-        ? await scrapeCaFantasy5()
-        : await scrapeTw539()
+    const draws = await scrapeGame(game)
 
+    try {
     const db  = getServerClient()
     const rows = draws.map(d => ({ period: d.period, date: d.date, numbers: d.numbers }))
 
@@ -803,11 +830,16 @@ export async function POST(req: Request) {
 
     if (error) {
       console.error(`[fetch-draws] upsert error (${table}):`, error.message)
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ ok: true, count: draws.length, persisted: false, warning: error.message })
     }
 
     console.log(`[fetch-draws] ✅ upserted ${draws.length} rows into ${table}`)
-    return NextResponse.json({ ok: true, count: draws.length })
+    return NextResponse.json({ ok: true, count: draws.length, persisted: true })
+    } catch (dbErr) {
+      const dbMsg = dbErr instanceof Error ? dbErr.message : String(dbErr)
+      console.error(`[fetch-draws] upsert exception (${table}):`, dbMsg)
+      return NextResponse.json({ ok: true, count: draws.length, persisted: false, warning: dbMsg })
+    }
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
