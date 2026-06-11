@@ -110,7 +110,8 @@ function parsePilio(html: string): OfficialDraw[] {
 
 function parseLotteryComTw(html: string): OfficialDraw[] {
   const $ = cheerio.load(html)
-  const lines = $('body').text()
+  const text = $('body').text() || $.root().text() || html
+  const lines = text
     .split(/\n+/)
     .map(line => line.trim())
     .filter(Boolean)
