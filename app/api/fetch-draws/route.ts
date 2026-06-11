@@ -108,7 +108,44 @@ function parsePilio(html: string): OfficialDraw[] {
   return draws
 }
 
+function parseLotteryComTw(html: string): OfficialDraw[] {
+  const $ = cheerio.load(html)
+  const lines = $('body').text()
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  const draws: OfficialDraw[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const dateM = lines[i].match(/^(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})$/)
+    if (!dateM) continue
+
+    const year = String(Number(dateM[1]) + 1911)
+    const month = dateM[2].padStart(2, '0')
+    const day = dateM[3].padStart(2, '0')
+    const date = `${year}/${month}/${day}`
+    let period = `${year}${month}${day}`
+    let numbers: number[] = []
+
+    for (const line of lines.slice(i + 1, i + 8)) {
+      if (/^\d{8,}$/.test(line)) period = line
+      const nums = (line.match(/\d+/g) ?? [])
+        .map(Number)
+        .filter(n => n >= 1 && n <= 39)
+      if (nums.length === 5) {
+        numbers = nums.sort((a, b) => a - b)
+        break
+      }
+    }
+
+    if (numbers.length === 5) draws.push({ period, date, numbers })
+  }
+
+  return deduplicate(draws)
+}
+
 const TW539_SOURCES: Array<{ url: string; label: string; parser: (h: string) => OfficialDraw[] }> = [
+  { url: 'https://api.lottery.com.tw/l539?c=list',                       label: 'api.lottery.com.tw', parser: parseLotteryComTw },
   { url: 'https://www.lotto-8.com/listLto539.asp',                         label: 'lotto-8.com',  parser: parseLotto8 },
   { url: 'https://www.pilio.idv.tw/lto539/list.asp?indexpage=1&orderby=1', label: 'pilio.idv.tw', parser: parsePilio  },
 ]

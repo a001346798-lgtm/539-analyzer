@@ -9,6 +9,9 @@ interface Draw {
   numbers: number[]
 }
 
+const RECENT_DRAW_COUNT = 5
+const ALL_NUMBERS = Array.from({ length: 39 }, (_, i) => i + 1)
+
 function ballColor(n: number): string {
   if (n % 3 === 1) return 'bg-red-500'
   if (n % 3 === 2) return 'bg-sky-500'
@@ -54,7 +57,7 @@ export default function LatestDraw() {
       const data = await res.json() as { draws?: Draw[]; updatedAt?: string }
 
       if (data.draws && data.draws.length > 0) {
-        setDraws(data.draws.slice(0, 8))
+        setDraws(data.draws.slice(0, RECENT_DRAW_COUNT))
         setUpdatedAt(data.updatedAt ?? '')
         return
       }
@@ -62,7 +65,7 @@ export default function LatestDraw() {
       if (game === 'tw539') {
         const mock = await fetch('/api/draws')
         const mockData = await mock.json() as { draws?: Draw[] }
-        setDraws(mockData.draws?.slice(0, 8) ?? [])
+        setDraws(mockData.draws?.slice(0, RECENT_DRAW_COUNT) ?? [])
       } else {
         setDraws([])
       }
@@ -103,6 +106,8 @@ export default function LatestDraw() {
 
   const gameLabel    = GAME_LABEL[gameMode]    ?? ''
   const gameDateNote = GAME_DATE_NOTE[gameMode] ?? ''
+  const recentOpened = new Set(draws.flatMap(draw => draw.numbers))
+  const recentMissing = ALL_NUMBERS.filter(n => !recentOpened.has(n))
 
   return (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -201,6 +206,22 @@ export default function LatestDraw() {
               </div>
             )
           })}
+          <div className="mt-3 rounded-lg bg-gray-900/55 border border-gray-700 px-3 py-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <span className="text-xs font-bold text-gray-200">近五期未開號碼</span>
+              <span className="text-[10px] text-gray-500">共 {recentMissing.length} 碼</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {recentMissing.map(n => (
+                <span
+                  key={n}
+                  className={`w-7 h-7 rounded-full ${ballColor(n)} flex items-center justify-center text-white font-bold text-[10px] shadow-sm`}
+                >
+                  {String(n).padStart(2, '0')}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>
