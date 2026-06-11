@@ -142,7 +142,7 @@ export default function LatestDraw() {
           >
             {loading ? '爬取中…' : '更新開獎資料'}
           </button>
-          <span className="text-[10px] text-gray-500 bg-gray-700 px-2 py-0.5 rounded">近 8 期</span>
+          <span className="text-[11px] text-gray-200 bg-gray-700 px-2.5 py-1 rounded font-bold">近 5 期</span>
         </div>
       </div>
 
@@ -193,14 +193,14 @@ export default function LatestDraw() {
                 </div>
 
                 {/* Right: odd/even + color summary */}
-                <div className="flex flex-col items-end gap-1 flex-shrink-0 w-14">
-                  <span className="text-[10px] text-gray-500">
+                <div className="flex flex-col items-end gap-1.5 flex-shrink-0 w-[4.75rem] sm:w-20">
+                  <span className="text-[12px] sm:text-xs text-gray-100 font-extrabold tracking-wide leading-none">
                     {oddCount}單{evenCount}雙
                   </span>
-                  <span className="text-[10px] flex items-center gap-0.5">
-                    {red   > 0 && <span className="text-red-400">{red}紅</span>}
-                    {blue  > 0 && <span className="text-sky-400">{blue}藍</span>}
-                    {green > 0 && <span className="text-emerald-400">{green}綠</span>}
+                  <span className="text-[11px] sm:text-xs flex items-center gap-1 font-extrabold leading-none">
+                    {red   > 0 && <span className="text-red-300">{red}紅</span>}
+                    {blue  > 0 && <span className="text-sky-300">{blue}藍</span>}
+                    {green > 0 && <span className="text-emerald-300">{green}綠</span>}
                   </span>
                 </div>
               </div>
